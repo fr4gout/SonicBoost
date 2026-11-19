@@ -13,13 +13,15 @@
         "title": "SonicBoost",
         "width": 400,
         "height": 740,
-        "resizable": false,
-        "maximizable": false,
+        "resizable": true,
+        "maximizable": true,
         "decorations": false,
         "transparent": true,
         "shadow": true,
         "center": true,
-        "visible": false
+        "visible": false,
+        "minWidth": 380,
+        "minHeight": 680
       }
     ],
     "security": {

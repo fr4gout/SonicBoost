@@ -60,10 +60,13 @@ A system-wide sound booster with a 10-band equalizer, real-time pitch shifting, 
 |:--|:--|
 | 🔊 **Up to 600 % boost** | Up to +15.6 dB on all system audio, with a built-in limiter so it stays clean. |
 | 🎚️ **10-band equalizer** | 31 Hz – 16 kHz, ±12 dB, a live response curve and 12 presets. You can save your own. |
+| 🎛️ **Parametric EQ** | Equalizer APO-style: a preamp and up to 20 filters (PK, shelves, LP/HP, notch, BP) with draggable curve points. Imports and exports APO / AutoEQ configs. |
+| 🗂️ **Sound profiles** | Save your whole sound and switch it system-wide from the title bar, the tray, or <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>1–9</kbd>. |
 | 🎵 **Pitch shifter** | ±12 semitones plus ±100 cents. Speed stays the same and latency is low. |
 | 💿 **Now Playing** | Title, artist and album art for Spotify, YouTube, Media Player and more, with playback controls. |
 | 🌌 **Live visualizers** | Bars, Radial, Wave and Galaxy, driven by the real output spectrum. |
 | 🧊 **Liquid-glass UI** | Monochrome, dark and light themes, spring-based motion, compact and extended layouts. |
+| 🔄 **Auto-updates** | Checks GitHub Releases and updates itself in one click, keeping your settings. |
 | ⚡ **Lightweight** | Rust audio engine. Runs from the tray, starts with Windows, about 1 % CPU while hidden. |
 
 ---
@@ -89,9 +92,12 @@ A system-wide sound booster with a 10-band equalizer, real-time pitch shifting, 
 | Feature | Details |
 |:--|:--|
 | **Boost** | 0 – 600 % on a spring-animated knob. Quick steps at 100 / 200 / 300 / 500 %. Drag, scroll, use the arrow keys, or double-click to reset. |
-| **Limiter** | A stereo-linked peak limiter plus soft clipping, so heavy boost never hard-clips. You can switch it off. |
+| **Loudness engine** | A loudness compressor that scales with the boost, followed by a 5 ms look-ahead peak limiter and a soft clip. Already-loud music gets clearly louder without clipping (+14 dB on streamed music at 600 %). You can switch it off. |
 | **Equalizer** | 10 bands: low shelf at 50 Hz, peaking filters from 62 Hz to 8 kHz, high shelf at 11 kHz. The curve on screen uses the same maths as the engine. |
 | **Smooth changes** | EQ gains, pitch, boost, width and balance all glide over about 15–30 ms, so nothing clicks while you drag. |
+| **Parametric EQ** | Preamp (−30 to +30 dB) plus up to 20 filters, each with type, frequency (10 Hz – 24 kHz), gain (±24 dB), Q (0.05 – 40) and its own on/off switch. Types: Peaking, Low/High shelf, Low/High pass, Notch, Band pass. Changes glide click-free. |
+| **APO / AutoEQ import** | Paste or open Equalizer APO `config.txt` or AutoEQ `ParametricEQ.txt` lines such as `Filter 1: ON PK Fc 80 Hz Gain -5 dB Q 10`. Export copies the curve back in the same format. |
+| **Profiles** | Named snapshots of boost, both EQs, preamp, pitch, stereo and limiter. Built-in: **SYNC Signature** (your APO curve) and **Flat**. Up to 30 profiles. The first 9 get hotkeys. |
 | **Presets** | Flat, Bass Boost, Bass Extreme, Vocal, Rock, Pop, Electronic, Cinema, Gaming, Podcast, Treble and Night, plus your own saved presets. |
 | **Pitch** | ±12 semitones and ±100 cents. Type exact values or drag. Shows the pitch ratio and the shift. |
 | **Stereo** | Width from mono to 200 %, and left/right balance. |
@@ -117,6 +123,8 @@ A system-wide sound booster with a 10-band equalizer, real-time pitch shifting, 
 | **Auto-recovery** | Reconnects automatically when headphones are unplugged or a Bluetooth device drops. |
 | **Efficiency** | The analyzer and visualizers stop completely while the window is hidden. |
 | **Single instance** | Launching it again brings the existing window to the front. |
+| **Updates** | Checks GitHub Releases on startup (optional) or from ⚙ Settings → Updates. Downloads, installs and restarts in one click. |
+| **Diagnostics** | Warns when Windows output isn't routed through SonicBoost, or when no audio is reaching it. |
 
 ---
 
@@ -133,7 +141,7 @@ flowchart LR
     C -->|"WASAPI capture"| D
     subgraph D ["SonicBoost engine (Rust)"]
         direction LR
-        D1["Pitch"] --> D2["10-band EQ"] --> D3["Width / Balance"] --> D4["Boost"] --> D5["Limiter"]
+        D1["Pitch"] --> D2["Preamp + Parametric EQ"] --> D2b["10-band EQ"] --> D3["Width / Balance"] --> D4["Boost + Loudness"] --> D5["Limiter"]
     end
     D -->|"WASAPI playback"| E["🔊 Your speakers<br/>or headphones"]
     D -.->|"spectrum 60 fps"| F["🖥️ UI"]
@@ -160,7 +168,10 @@ The full design (threads, lock-free buffers, DSP maths) is documented in [**docs
 ## 📦 Installation
 
 ### 1 · Install SonicBoost
-Download the latest installer from [**Releases**](https://github.com/fr4gout/SonicBoost/releases/latest):
+Download the latest installer from [**Releases**](https://github.com/fr4gout/SonicBoost/releases/latest). After that, SonicBoost updates itself.
+
+> [!NOTE]
+> Version 1.0.0 has no updater. If you're on 1.0.0, install the latest version once by hand; updates are automatic from then on.
 
 | File | Use when |
 |:--|:--|
@@ -172,6 +183,7 @@ Download the latest installer from [**Releases**](https://github.com/fr4gout/Son
 1. Install **[VB-Audio Virtual Cable](https://vb-audio.com/Cable/)**: run `VBCABLE_Setup_x64.exe` as administrator, then **restart** your PC.
 2. Open **Settings → System → Sound → Output** and choose **CABLE Input**.
 3. Open SonicBoost, then go to **⚙ Settings → Play to**, choose your real speakers or headphones, and click **Apply & restart**.
+4. Set your **speakers' own volume to 100 %** (Sound settings → your speakers → Volume). SonicBoost's boost is added on top of it.
 
 > [!TIP]
 > SonicBoost finds the cable automatically and shows a step-by-step guide if it's missing.
@@ -188,10 +200,13 @@ Download the latest installer from [**Releases**](https://github.com/fr4gout/Son
 | **Boost knob** | Drag up/down (hold <kbd>Shift</kbd> for fine control), scroll, use the arrow keys, or double-click for 100 % |
 | **Power button** | Turns processing on or off instantly (bypass) for an A/B comparison |
 | **EQ sliders** | Drag, scroll in 0.5 dB steps, or double-click to reset a band |
+| **Parametric curve** | Drag a numbered point to set frequency and gain (hold <kbd>Shift</kbd> for 0.05 dB steps), scroll on it for Q, double-click empty space to add a filter, or double-click a point to reset its gain |
+| **Profiles menu** | Click a profile to apply it everywhere. Type a name and press **Save** to store the current sound. Hover a profile and click × to delete it. |
 | **Pitch** | Drag the slider, use the − / + buttons, or type semitones and cents |
 | **Visualizer** | Pick a mode from the tabs, or double-click the visualizer to cycle through them |
 | **Album art** | Hover to see it in full colour |
 | **⤢ button** | Switches between compact and extended views |
+| **□ button / F11** | Maximize (or double-click the title bar); <kbd>F11</kbd> toggles full screen, <kbd>Esc</kbd> leaves it |
 | **✕ button** | Hides to the tray. Boosting continues. |
 
 ## ⌨️ Global hotkeys
@@ -203,6 +218,7 @@ Download the latest installer from [**Releases**](https://github.com/fr4gout/Son
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>B</kbd> | Boost on / off |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>P</kbd> | Play / pause music |
 | <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>→</kbd> | Previous / next track |
+| <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>1</kbd> … <kbd>9</kbd> | Switch to sound profile 1 … 9 |
 
 Settings are saved to `%APPDATA%\dev.synclab.sonicboost\settings.json`.
 
@@ -309,6 +325,15 @@ An app is playing straight to your speakers instead of the cable. Set the Window
 </details>
 
 <details>
+<summary><b>The boost doesn't sound louder</b></summary>
+
+1. Check that the status pill says **Live** and that no "Not boosting yet" warning is showing.
+2. Windows output must be **CABLE Input**. If it's still your speakers, you hear the original, unboosted sound.
+3. Set your speakers' own volume to 100 %, and set the Windows volume slider (which now controls CABLE Input) to a normal level.
+4. Very loud music is already close to full scale, so it gains less (around +8 dB) than quieter content (up to +20 dB). This is the physical limit before audible distortion.
+</details>
+
+<details>
 <summary><b>Crackling at high boost</b></summary>
 
 Keep the **Limiter** on, and lower the 31 Hz and 62 Hz bands slightly. Very heavy bass boost combined with 500 % or more can strain small speakers.
@@ -354,9 +379,10 @@ No. SonicBoost has no telemetry or network features. The only web requests are t
 
 - [ ] Switch the Windows default output to the cable automatically
 - [ ] Per-app boost profiles
-- [ ] Parametric EQ mode (adjustable frequency and Q)
+- [x] Parametric EQ mode (adjustable frequency and Q)
+- [x] Sound profiles
 - [ ] Import / export presets
-- [ ] Auto-update through GitHub Releases
+- [x] Auto-update through GitHub Releases
 - [ ] On-screen overlay when a hotkey changes the boost
 
 Ideas and requests are welcome in [Issues](https://github.com/fr4gout/SonicBoost/issues).

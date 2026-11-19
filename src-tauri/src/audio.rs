@@ -5,7 +5,7 @@
 //!   Apps -> [Windows default: CABLE Input] -> CABLE Output -> SonicBoost -> Speakers
 
 use crate::analyzer::{Analyzer, Frame};
-use crate::dsp::{DspParams, Processor, Resampler, EQ_BANDS};
+use crate::dsp::{DspParams, FilterKind, PeqBand, Processor, Resampler, EQ_BANDS, PEQ_MAX};
 use crate::ring::Ring;
 use anyhow::{anyhow, bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -13,7 +13,7 @@ use cpal::{FromSample, Sample, SizedSample, StreamConfig};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
@@ -76,8 +76,32 @@ impl Params {
     }
 }
 
+/// Parametric EQ, already converted to DSP form on the UI thread so the
+/// audio callback only copies plain values (it uses `try_lock`, never waits).
+#[derive(Clone, Copy)]
+pub struct PeqState {
+    pub enabled: bool,
+    pub preamp: f32,
+    pub bands: [PeqBand; PEQ_MAX],
+    pub n: usize,
+}
+
+impl PeqState {
+    pub fn from_settings(p: &crate::settings::ParamEq) -> Self {
+        let blank = PeqBand { enabled: false, kind: FilterKind::Peaking, freq: 1000.0, gain_db: 0.0, q: 1.0 };
+        let mut bands = [blank; PEQ_MAX];
+        let n = p.filters.len().min(PEQ_MAX);
+        for (i, f) in p.filters.iter().take(n).enumerate() {
+            bands[i] = PeqBand { enabled: f.enabled, kind: FilterKind::from_code(&f.kind), freq: f.freq, gain_db: f.gain, q: f.q };
+        }
+        Self { enabled: p.enabled, preamp: p.preamp, bands, n }
+    }
+}
+
 pub struct Shared {
     pub params: Params,
+    pub peq: Mutex<PeqState>,
+    pub peq_version: AtomicU64,
     pub peak_l: AtomicF32,
     pub peak_r: AtomicF32,
     pub sample_rate: AtomicU32,
@@ -93,6 +117,8 @@ impl Shared {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             params: Params::new(),
+            peq: Mutex::new(PeqState::from_settings(&crate::settings::ParamEq { enabled: false, ..Default::default() })),
+            peq_version: AtomicU64::new(1),
             peak_l: AtomicF32::new(0.0),
             peak_r: AtomicF32::new(0.0),
             sample_rate: AtomicU32::new(48_000),
@@ -347,6 +373,7 @@ where
     let target = (rate * 2 * TARGET_LATENCY_MS / 1000) & !1;
     let mut proc = Processor::new(rate as f32);
     let mut seen_version = 0u64;
+    let mut seen_peq = 0u64;
     let mut primed = false;
 
     let stream = dev.build_output_stream(
@@ -356,6 +383,13 @@ where
             if v != seen_version {
                 seen_version = v;
                 proc.set_params(shared.params.snapshot());
+            }
+            let pv = shared.peq_version.load(Ordering::Acquire);
+            if pv != seen_peq {
+                if let Ok(p) = shared.peq.try_lock() {
+                    proc.set_peq(p.enabled, p.preamp, &p.bands[..p.n]);
+                    seen_peq = pv;
+                }
             }
 
             // Clock-drift control between the two devices.

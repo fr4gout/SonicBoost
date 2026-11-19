@@ -25,6 +25,10 @@
       <span data-tauri-drag-region>Sonic<b>Boost</b></span>
     </div>
     <div id="statusPill" class="status-pill" data-tauri-drag-region><i></i><span>Starting…</span></div>
+    <button id="btnProfiles" class="profile-btn" title="Sound profiles (Ctrl+Alt+1–9)">
+      <svg viewBox="0 0 24 24"><path d="M12 3 3 7.5l9 4.5 9-4.5L12 3Z"/><path d="m3 12 9 4.5 9-4.5"/><path d="m3 16.5 9 4.5 9-4.5"/></svg>
+      <span id="profileName">Profiles</span>
+    </button>
     <div class="win-btns">
       <button id="btnSettings" class="icon-btn" title="Settings">
         <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
@@ -34,9 +38,24 @@
         <svg class="i-shrink" viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
       </button>
       <button id="btnMin" class="icon-btn" title="Minimize"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+      <button id="btnMax" class="icon-btn" title="Maximize (double-click title bar · F11 for full screen)">
+        <svg class="i-max" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+        <svg class="i-restore" viewBox="0 0 24 24"><rect x="5" y="8" width="11" height="11" rx="2"/><path d="M8 5h9a2 2 0 0 1 2 2v9"/></svg>
+      </button>
       <button id="btnClose" class="icon-btn close" title="Hide to tray (keeps boosting)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
     </div>
   </header>
+
+  <!-- warnings / update notices -->
+  <div class="notice" id="notice" role="status" aria-live="polite">
+    <div class="n-body">
+      <b id="noticeTitle"></b>
+      <span id="noticeText"></span>
+      <div class="n-progress" id="noticeProgress"><i></i></div>
+    </div>
+    <button class="btn primary" id="noticeAction"></button>
+    <button class="icon-btn" id="noticeClose" title="Dismiss"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+  </div>
 
   <main class="layout">
     <!-- ─────────────── Now playing ─────────────── -->
@@ -116,7 +135,11 @@
     <!-- ─────────────── Presets ─────────────── -->
     <section class="panel presets-panel" style="--i:3">
       <div class="panel-head x-only"><h3>Presets</h3><span class="hint" id="presetName">Flat</span><button id="btnSavePreset" class="chip small">+ Save</button></div>
-      <div class="presets" id="presets"></div>
+      <div class="presets-wrap">
+        <button class="p-arrow left" id="presetsLeft" title="Scroll left" aria-label="Scroll presets left"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></button>
+        <div class="presets" id="presets"></div>
+        <button class="p-arrow right" id="presetsRight" title="Scroll right" aria-label="Scroll presets right"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+      </div>
     </section>
 
     <!-- ─────────────── Visualizer ─────────────── -->
@@ -132,11 +155,30 @@
     <!-- ─────────────── Equalizer ─────────────── -->
     <section class="panel eq-panel x-only" style="--i:5">
       <div class="panel-head">
-        <h3>10-Band Equalizer</h3>
-        <span class="hint">drag · scroll · double-click resets</span>
-        <button id="eqReset" class="chip small">Flat</button>
+        <div class="seg" id="eqTabs">
+          <button data-eqtab="graphic" class="active">10-Band</button>
+          <button data-eqtab="parametric">Parametric</button>
+        </div>
+        <span class="hint g-only">drag · scroll · double-click resets</span>
+        <button id="eqReset" class="chip small g-only">Flat</button>
+        <div class="peq-actions p-only">
+          <label class="switch mini" title="Parametric EQ on / off"><input type="checkbox" id="peqOn" /><span></span></label>
+          <button class="chip small" id="peqImport" title="Paste or open an Equalizer APO / AutoEQ config">Import</button>
+          <button class="chip small" id="peqExport" title="Copy as Equalizer APO config">Export</button>
+          <button class="chip small" id="peqAdd">+ Filter</button>
+        </div>
       </div>
-      <div class="eq" id="eq"><canvas id="eqCurve"></canvas><div class="eq-bands" id="eqBands"></div></div>
+      <div class="eq g-only" id="eq"><canvas id="eqCurve"></canvas><div class="eq-bands" id="eqBands"></div></div>
+      <div class="peq p-only" id="peq">
+        <canvas id="peqCurve" title="Drag a point · scroll on it for Q · double-click to add"></canvas>
+        <div class="peq-pre">
+          <span class="pp-label">Preamp</span>
+          <input type="range" id="peqPre" min="-20" max="10" step="0.1" />
+          <label class="nf"><input type="number" id="peqPreVal" min="-30" max="30" step="0.1" /><em>dB</em></label>
+        </div>
+        <div class="peq-head"><span>#</span><span></span><span>Type</span><span>Frequency</span><span>Gain</span><span>Q</span><span></span></div>
+        <div class="peq-list" id="peqList"></div>
+      </div>
     </section>
 
     <!-- ─────────────── Settings ─────────────── -->
@@ -177,6 +219,13 @@
           <input type="range" id="rngIntensity" min="0.3" max="2" step="0.05" />
         </div>
 
+        <div class="updates">
+          <h4>Updates</h4>
+          <div class="u-row"><span>SonicBoost <b id="appVersion">1.0.0</b></span><button class="btn" id="btnCheckUpdate">Check for updates</button></div>
+          <div class="u-status" id="updateStatus"></div>
+          <label class="switch"><input type="checkbox" id="tglAutoUpdate" /><span></span>Check automatically on startup</label>
+        </div>
+
         <div class="hotkeys">
           <h4>Global hotkeys</h4>
           <div><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>↑</kbd><kbd>↓</kbd><span>Boost ±10%</span></div>
@@ -199,10 +248,38 @@
         <li>In Windows Sound settings set <b>CABLE Input</b> as the default <b>output</b>.
           <button class="btn" data-link="sound-settings">Open Sound settings</button></li>
         <li>In SonicBoost Settings, pick your real speakers as <b>Play to</b>.</li>
+        <li>Turn your <b>speakers' own volume to 100%</b>. SonicBoost's boost is added on top of it.</li>
       </ol>
       <div class="row-btns">
         <button class="btn primary" id="setupRetry">Check again</button>
         <button class="btn" id="setupLater">Later</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Profiles menu -->
+  <div class="pop" id="profilesPop" role="dialog" aria-label="Sound profiles">
+    <div class="pop-head"><b>Sound profiles</b><span>Apply to every app · Ctrl+Alt+1–9</span></div>
+    <div class="pop-list" id="profileList"></div>
+    <div class="pop-save">
+      <label class="nf"><input type="text" id="profileNew" maxlength="32" placeholder="Save current sound as…" /></label>
+      <button class="btn primary" id="profileSave">Save</button>
+    </div>
+  </div>
+
+  <!-- Equalizer APO import -->
+  <div class="modal" id="apoModal">
+    <div class="modal-card">
+      <h2>Import Equalizer APO config</h2>
+      <p>Paste an Equalizer APO <code>config.txt</code> or an AutoEQ “ParametricEQ.txt” file. Preamp and up to 20 filters are imported.</p>
+      <textarea id="apoText" spellcheck="false" placeholder="Preamp: -5 dB&#10;Filter 1: ON PK Fc 80 Hz Gain -5 dB Q 10&#10;Filter 2: ON PK Fc 1800 Hz Gain 3 dB Q 1"></textarea>
+      <div class="modal-err" id="apoErr"></div>
+      <div class="row-btns">
+        <button class="btn" id="apoFile">Open .txt file…</button>
+        <input type="file" id="apoFileInput" accept=".txt,.cfg,text/plain" hidden />
+        <span style="flex:1"></span>
+        <button class="btn" id="apoCancel">Cancel</button>
+        <button class="btn primary" id="apoApply">Import</button>
       </div>
     </div>
   </div>

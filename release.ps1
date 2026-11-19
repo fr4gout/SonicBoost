@@ -23,7 +23,11 @@ if ($Version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$') { Fail "Version must 
 $tag = "v$Version"
 
 if (-not $DryRun) {
-    if (git status --porcelain) { Fail "You have uncommitted changes. Commit or stash them first." }
+    $pending = git status --porcelain
+    if ($pending) {
+        Write-Host "These changes will be included in the $tag release commit:" -ForegroundColor White
+        $pending | ForEach-Object { Write-Host "   $_" }
+    }
     $branch = git rev-parse --abbrev-ref HEAD
     if ($branch -ne "main") { Fail "Switch to the main branch first (you are on '$branch')." }
     if (git tag -l $tag) { Fail "Tag $tag already exists." }
@@ -62,8 +66,7 @@ Save "package.json" $pkg
 Save "CHANGELOG.md" $log
 
 # 3. commit, tag, push
-git add "src-tauri/tauri.conf.json" "src-tauri/Cargo.toml" "package.json" "CHANGELOG.md"
-if (Test-Path "src-tauri\Cargo.lock") { git add "src-tauri/Cargo.lock" }
+git add -A
 git commit -q -m "chore(release): $tag"
 if ($LASTEXITCODE -ne 0) { Fail "git commit failed." }
 git tag -a $tag -m "SonicBoost $tag"

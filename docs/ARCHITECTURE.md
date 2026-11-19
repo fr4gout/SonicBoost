@@ -73,16 +73,18 @@ flowchart TB
 All processing is in `dsp.rs`, has no dependencies, and is unit-tested.
 
 ```
-input → Pitch shifter → 10-band EQ → Width / Balance → Boost → Limiter → output
+input → Pitch shifter → Preamp → Parametric EQ (≤20 filters) → 10-band EQ → Width / Balance → Boost → Loudness compressor → Limiter → output
 ```
 
 | Stage | Design |
 |:--|:--|
 | **Pitch** | A two-tap delay-line shifter (the "rotating tape head" design) with a ~42 ms window. Sin² crossfade windows always sum to 1. At a ratio of 1.0 it passes audio through untouched, with no added latency. The ratio glides. |
+| **Parametric EQ** | Equalizer APO order: preamp, then up to 20 RBJ biquads (PK, LSC, HSC, LP, HP, NO, BP) with a user-set Q. Every 32 samples, frequency (geometric), gain and Q glide 25 % of the way to their targets. A type change or a newly added filter starts at its target with cleared state. The callback reads the configuration with `try_lock` only when `peq_version` changes, so it never waits and never allocates. |
 | **EQ** | RBJ cookbook biquads in transposed direct form II. Band 0 is a low shelf at 50 Hz, bands 1–8 are peaking filters (Q 1.1), and band 9 is a high shelf at 11.2 kHz. Every 32 samples the gains step 25 % of the way to their targets, which removes zipper noise. Bands at 0 dB are skipped. |
 | **Width / Balance** | Mid/side width, `S × width`, followed by linear balance attenuation. Both glide. |
 | **Boost** | Linear gain from 0 to 6 with a 30 ms glide. |
-| **Limiter** | Stereo-linked peak limiter: threshold 0.94, instant attack, 120 ms release. It is followed by a tanh soft knee above 0.95, so the output can never exceed ±1. |
+| **Loudness compressor** | Stereo-linked, threshold −16 dBFS with an 8 dB soft knee, 4 ms attack and 120 ms release. The ratio scales with the boost (1:1 at 100 %, 3.5:1 at 600 %), with full make-up gain, so quiet parts receive the whole boost while loud parts stay below the ceiling. |
+| **Limiter** | Look-ahead peak limiter: the audio is delayed 5 ms, the gain computer holds the deepest reduction needed in that window, attack is tuned to complete within the look-ahead, release is 60 ms, threshold 0.93. A tanh soft knee above 0.95 follows, so the output can never exceed ±1. |
 
 **Tests** (`cargo test --lib`) check that peaking and shelf filters hit their target gains, that a 12 dB boost measures 12 dB in the time domain, that pitch moves up one octave and down five semitones, that bypass is bit-exact, that 600 % boost never clips, that the EQ glides, that width and balance behave, the resampler ratio, the FFT peak bin, the ring buffer under contention, and the base64 and app-name helpers.
 
@@ -129,6 +131,11 @@ Plain HTML, CSS and ES modules with no build step. Tauri serves `ui/` directly, 
 | `set_autostart` / `set_start_minimized` | `enabled` | Startup behaviour |
 | `set_viz_active` | `enabled` | Pause or resume the analyzer |
 | `media_control` | `action` | `play_pause`, `next`, `previous`, `refresh` |
+| `set_peq` | `peq` | `{ enabled, preamp, filters: [{ enabled, kind, freq, gain, q }] }`, using APO type codes |
+| `list_profiles` / `save_profile` / `apply_profile` / `delete_profile` | `name` | Sound profiles. `apply_profile` emits `state-reload` and rebuilds the tray menu |
+| `check_update` | — | Latest GitHub release compared with the running version |
+| `install_update` | `url` | Download the setup asset (this repo only), run it in passive mode, relaunch |
+| `set_auto_update` | `enabled` | Check for updates on startup |
 | `open_link` | `target` | Allow-listed links: Sound settings, VB-Cable page |
 
 | Event | Payload |
@@ -137,6 +144,12 @@ Plain HTML, CSS and ES modules with no build step. Tauri serves `ui/` directly, 
 | `media-status` | `{ available, title, artist, album, app, status, position, duration, art?, track_id }` |
 | `engine-status` | `{ running, input, output, sample_rate, input_rate, latency_ms, error }` |
 | `bypass-changed` / `boost-changed` | `bool` / `f32`, sent by the tray and hotkeys |
+| `update-progress` | `{ done, total }` bytes while downloading an update |
+| `state-reload` | profile name. The UI re-reads `get_state` and refreshes every control |
+
+## Updates
+
+`updater.rs` calls `GET /repos/fr4gout/SonicBoost/releases/latest`, compares `tag_name` with the app version (semver, where a pre-release ranks below the matching release), and picks the `*-setup.exe` asset. Downloads are allowed only from `https://github.com/fr4gout/SonicBoost/releases/download/…`, and the file is checked: it must be at least 500 KB, have the `MZ` header and match `Content-Length`. A hidden PowerShell process waits for `setup.exe /P` (passive mode) to finish, then relaunches the installed exe. The app saves its settings and exits first, so the installer can replace it.
 
 ## Settings
 

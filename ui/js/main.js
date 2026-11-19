@@ -4,6 +4,8 @@ import { LiquidBackground } from './liquid.js';
 import { Visualizer, KnobRing } from './visualizer.js';
 import { Knob, PitchSlider, Equalizer } from './controls.js';
 import { NowPlaying } from './nowplaying.js';
+import { GlassSelect } from './select.js';
+import { ParametricEditor, parseApo, toApo, SIGNATURE } from './peq.js';
 
 const $ = (id) => document.getElementById(id);
 const app = $('app');
@@ -35,6 +37,24 @@ function toast(msg) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 1800);
 }
 
+// ── notice bar (one at a time; higher priority wins) ──────────────────
+let noticeKey = null, noticePrio = 0, noticeAction = null;
+function showNotice({ key, prio = 1, title, text, action, onAction, warn = false }) {
+  if (noticeKey && noticeKey !== key && prio < noticePrio) return;
+  noticeKey = key; noticePrio = prio; noticeAction = onAction || null;
+  const n = $('notice');
+  $('noticeTitle').textContent = title; $('noticeText').textContent = text || '';
+  $('noticeAction').textContent = action || ''; $('noticeAction').style.display = action ? '' : 'none';
+  n.classList.toggle('warn', warn); n.classList.remove('busy'); n.classList.add('show');
+}
+function hideNotice(key) {
+  if (key && key !== noticeKey) return;
+  $('notice').classList.remove('show', 'busy'); noticeKey = null; noticePrio = 0; noticeAction = null;
+}
+const dismissed = new Set();
+$('noticeAction').addEventListener('click', () => noticeAction && noticeAction());
+$('noticeClose').addEventListener('click', () => { if (noticeKey) dismissed.add(noticeKey); hideNotice(); });
+
 // ── audio + visuals ──────────────────────────────────────────────────
 const audio = new AudioData(72);
 const liquid = new LiquidBackground($('liquidBg'), audio);
@@ -50,7 +70,7 @@ function showBoost(v) {
 }
 const knob = new Knob($('knob'), {
   min: 0, max: 6, value: 1,
-  onInput: (v) => { S.boost = v; invoke('set_boost', { value: v }); showBoost(v); },
+  onInput: (v) => { S.boost = v; invoke('set_boost', { value: v }); showBoost(v); markCustom(); },
   onCommit: save,
 });
 document.querySelectorAll('[data-boost]').forEach((b) => b.addEventListener('click', () => {
@@ -92,6 +112,7 @@ function setPitch(st, ct, fromSlider = false) {
   if (!fromSlider) pitch.set(st, false);
   invoke('set_pitch', { semitones: st, cents: ct });
   showPitch(changed);
+  if (changed) markCustom();
 }
 const pitch = new PitchSlider($('pitchSlider'), { onInput: (v) => setPitch(v, S.pitch_cents, true), onCommit: save });
 $('inSt').addEventListener('change', (e) => { setPitch(e.target.value, S.pitch_cents); save(); });
@@ -102,7 +123,7 @@ $('pitchReset').addEventListener('click', () => { setPitch(0, 0); save(); });
 
 // ── equalizer + presets ──────────────────────────────────────────────
 const eq = new Equalizer($('eqBands'), $('eqCurve'), {
-  onBand: (i, g) => { S.eq[i] = g; S.preset = 'Custom'; invoke('set_eq_band', { index: i, gain: g }); renderPresets(); },
+  onBand: (i, g) => { S.eq[i] = g; S.preset = 'Custom'; invoke('set_eq_band', { index: i, gain: g }); renderPresets(); markCustom(); },
   onCommit: save,
 });
 function applyPreset(name, gains) {
@@ -136,8 +157,55 @@ function renderPresets() {
   PRESETS.forEach(([n, g]) => add(n, g, false));
   (S.custom_presets || []).forEach((p) => add(p.name, p.eq, true));
   $('presetName').textContent = S.preset;
-  requestAnimationFrame(() => box.classList.toggle('overflow', box.scrollHeight > box.clientHeight + 1));
+  requestAnimationFrame(() => {
+    box.classList.toggle('overflow', box.scrollHeight > box.clientHeight + 1);
+    window.__revealActivePreset && window.__revealActivePreset();
+  });
 }
+
+// Compact view: the preset row scrolls with the mouse wheel, by dragging, and with arrow buttons.
+(function presetScroller() {
+  const box = $('presets'), wrap = box.parentElement;
+  const update = () => {
+    const max = box.scrollWidth - box.clientWidth;
+    wrap.classList.toggle('can-left', box.scrollLeft > 2);
+    wrap.classList.toggle('can-right', box.scrollLeft < max - 2);
+  };
+  box.addEventListener('scroll', update, { passive: true });
+  new ResizeObserver(update).observe(box);
+  new MutationObserver(() => requestAnimationFrame(update)).observe(box, { childList: true });
+  box.addEventListener('wheel', (e) => {
+    if (S && S.mode !== 'compact') return;
+    const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (!d) return;
+    e.preventDefault();
+    box.scrollBy({ left: d * 1.2, behavior: 'smooth' });
+  }, { passive: false });
+  let down = null, moved = false;
+  box.addEventListener('pointerdown', (e) => {
+    if (S && S.mode !== 'compact') return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    down = { x: e.clientX, left: box.scrollLeft, id: e.pointerId }; moved = false;
+  });
+  box.addEventListener('pointermove', (e) => {
+    if (!down) return;
+    const dx = e.clientX - down.x;
+    if (!moved && Math.abs(dx) > 5) { moved = true; box.classList.add('dragging'); box.setPointerCapture(down.id); }
+    if (moved) box.scrollLeft = down.left - dx;
+  });
+  const end = () => { if (down && moved) setTimeout(() => box.classList.remove('dragging'), 0); down = null; };
+  box.addEventListener('pointerup', end); box.addEventListener('pointercancel', end);
+  // swallow the click that ends a drag so it doesn't pick a preset
+  box.addEventListener('click', (e) => { if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; } }, true);
+  $('presetsLeft').addEventListener('click', () => box.scrollBy({ left: -box.clientWidth * 0.7, behavior: 'smooth' }));
+  $('presetsRight').addEventListener('click', () => box.scrollBy({ left: box.clientWidth * 0.7, behavior: 'smooth' }));
+  window.__revealActivePreset = () => {
+    const a = box.querySelector('.chip.active');
+    // scroll only the preset row (scrollIntoView would also shift the whole window)
+    if (a && S && S.mode === 'compact') box.scrollTo({ left: a.offsetLeft - (box.clientWidth - a.offsetWidth) / 2, behavior: 'smooth' });
+    update();
+  };
+})();
 
 $('btnSavePreset').addEventListener('click', () => {
   if ($('presetInput')) return $('presetInput').focus();
@@ -170,6 +238,87 @@ $('vizCanvas').addEventListener('dblclick', () => {
   setViz(modes[(modes.indexOf(S.viz_mode) + 1) % modes.length], true);
 });
 
+// ── parametric EQ (Equalizer APO style) ───────────────────────────────
+const peqEd = new ParametricEditor({
+  list: $('peqList'), canvas: $('peqCurve'), preRange: $('peqPre'), preInput: $('peqPreVal'),
+  onChange: (peq) => { S.peq = peq; invoke('set_peq', { peq }); markCustom(); save(); },
+});
+$('peqOn').addEventListener('change', (e) => { peqEd.setEnabled(e.target.checked); toast(e.target.checked ? 'Parametric EQ on' : 'Parametric EQ off'); });
+$('peqAdd').addEventListener('click', () => { if (!peqEd.add()) toast('Up to 20 filters'); });
+$('peqExport').addEventListener('click', async () => {
+  const text = toApo(peqEd.peq);
+  try { await navigator.clipboard.writeText(text); toast('Copied as Equalizer APO config'); }
+  catch { openApo(text); toast('Copy the text below'); }
+});
+function openApo(text = '') { $('apoText').value = text; $('apoErr').textContent = ''; $('apoModal').classList.add('show'); setTimeout(() => $('apoText').focus(), 50); }
+$('peqImport').addEventListener('click', () => openApo(''));
+$('apoCancel').addEventListener('click', () => $('apoModal').classList.remove('show'));
+$('apoFile').addEventListener('click', () => $('apoFileInput').click());
+$('apoFileInput').addEventListener('change', async (e) => { const f = e.target.files[0]; if (f) $('apoText').value = await f.text(); e.target.value = ''; });
+$('apoApply').addEventListener('click', () => {
+  try {
+    const r = parseApo($('apoText').value);
+    peqEd.load(r); peqEd.emit();
+    $('peqOn').checked = true;
+    $('apoModal').classList.remove('show');
+    toast(`Imported preamp ${r.preamp.toFixed(1)} dB + ${r.filters.length} filters${r.skipped ? ` (${r.skipped} skipped)` : ''}`);
+  } catch (err) { $('apoErr').textContent = err.message; }
+});
+
+// EQ view tabs (remembered)
+function setEqTab(tab) {
+  document.querySelector('.eq-panel').classList.toggle('parametric', tab === 'parametric');
+  document.querySelectorAll('[data-eqtab]').forEach((b) => b.classList.toggle('active', b.dataset.eqtab === tab));
+  try { localStorage.setItem('eqTab', tab); } catch {}
+  requestAnimationFrame(() => { peqEd.draw(); eq.dirty = true; });
+}
+document.querySelectorAll('[data-eqtab]').forEach((b) => b.addEventListener('click', () => setEqTab(b.dataset.eqtab)));
+setEqTab((() => { try { return localStorage.getItem('eqTab'); } catch { return null; } })() || 'graphic');
+
+// ── sound profiles (system-wide) ──────────────────────────────────────
+const CHECK_SVG = '<svg class="pi-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+const X_SVG = '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>';
+let profiles = { profiles: [], active: '' };
+function markCustom() { if (profiles.active) { profiles.active = ''; renderProfiles(); } }
+function renderProfiles() {
+  $('profileName').textContent = profiles.active || 'Custom';
+  $('btnProfiles').title = `Sound profile: ${profiles.active || 'Custom (unsaved changes)'} · Ctrl+Alt+1–9`;
+  const list = $('profileList');
+  list.innerHTML = profiles.profiles.length ? '' : '<div class="pop-empty">No profiles yet. Save your current sound below.</div>';
+  profiles.profiles.forEach((name, i) => {
+    const el = document.createElement('div');
+    el.className = 'pop-item' + (name === profiles.active ? ' active' : '');
+    el.innerHTML = `<span class="pi-key">${i < 9 ? `<kbd title="Ctrl+Alt+${i + 1}">${i + 1}</kbd>` : ''}</span><span class="pi-name"></span>${CHECK_SVG}<button class="pi-del" title="Delete profile">${X_SVG}</button>`;
+    el.querySelector('.pi-name').textContent = name;
+    el.addEventListener('click', async (e) => {
+      if (e.target.closest('.pi-del')) {
+        profiles = await invoke('delete_profile', { name }); renderProfiles(); toast(`Deleted “${name}”`); return;
+      }
+      try { await invoke('apply_profile', { name }); closeProfiles(); } catch (err) { toast(String(err)); }
+    });
+    list.appendChild(el);
+  });
+}
+function openProfiles() {
+  $('profilesPop').classList.add('open'); $('btnProfiles').classList.add('open');
+  invoke('list_profiles').then((p) => { if (p) { profiles = p; renderProfiles(); } });
+  setTimeout(() => document.addEventListener('pointerdown', outsideProfiles, true));
+}
+function closeProfiles() {
+  $('profilesPop').classList.remove('open'); $('btnProfiles').classList.remove('open');
+  document.removeEventListener('pointerdown', outsideProfiles, true);
+}
+function outsideProfiles(e) { if (!e.target.closest('#profilesPop, #btnProfiles')) closeProfiles(); }
+$('btnProfiles').addEventListener('click', () => ($('profilesPop').classList.contains('open') ? closeProfiles() : openProfiles()));
+async function saveProfile() {
+  const name = $('profileNew').value.trim();
+  if (!name) { $('profileNew').focus(); return; }
+  try { profiles = await invoke('save_profile', { name }); $('profileNew').value = ''; renderProfiles(); toast(`Saved profile “${name}”`); }
+  catch (err) { toast(String(err)); }
+}
+$('profileSave').addEventListener('click', saveProfile);
+$('profileNew').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveProfile(); if (e.key === 'Escape') closeProfiles(); });
+
 // ── now playing ──────────────────────────────────────────────────────
 const np = new NowPlaying(document.querySelector('.np-panel'), { onControl: (a) => invoke('media_control', { action: a }) });
 
@@ -197,10 +346,45 @@ $('btnSettings').addEventListener('click', () => {
 });
 $('closeSettings').addEventListener('click', () => { app.classList.remove('sheet'); $('btnSettings').classList.remove('active'); });
 $('btnMin').addEventListener('click', () => invoke('win_minimize'));
+
+// ── maximize / full screen ───────────────────────────────────────────
+let win = { maximized: false, fullscreen: false };
+function applyWin(w) {
+  if (!w) return;
+  win = w;
+  const big = w.maximized || w.fullscreen;
+  app.classList.toggle('maxed', big);
+  $('btnMax').title = big ? 'Restore down' : 'Maximize (double-click title bar · F11 for full screen)';
+  // a maximized window always uses the extended layout
+  if (big && S && S.mode === 'compact') setMode('extended');
+  requestAnimationFrame(() => { eq.dirty = true; peqEd.draw(); });
+}
+async function toggleMax() {
+  if (S && S.mode === 'compact' && !win.maximized && !win.fullscreen) await setMode('extended');
+  applyWin(await invoke('win_toggle_maximize'));
+}
+$('btnMax').addEventListener('click', toggleMax);
+window.addEventListener('keydown', async (e) => {
+  if (e.key === 'F11') {
+    e.preventDefault();
+    if (S && S.mode === 'compact') await setMode('extended');
+    applyWin(await invoke('win_toggle_fullscreen'));
+  } else if (e.key === 'Escape' && win.fullscreen) {
+    applyWin(await invoke('win_toggle_fullscreen'));
+  }
+});
+// double-clicking the title bar (handled by Tauri) or Win+Up also change the state
+let winTimer = 0;
+window.addEventListener('resize', () => {
+  clearTimeout(winTimer);
+  winTimer = setTimeout(async () => { try { applyWin(await invoke('win_state')); } catch {} }, 120);
+});
 $('btnClose').addEventListener('click', () => { invoke('win_hide'); if (!isTauri) toast('Hidden to tray (keeps boosting)'); });
 
 // ── settings panel ───────────────────────────────────────────────────
+const selects = [];
 function fillDevices(d) {
+  if (!selects.length) selects.push(new GlassSelect($('selInput')), new GlassSelect($('selOutput')));
   const fill = (sel, list, cur, filter) => {
     sel.innerHTML = '';
     const auto = document.createElement('option'); auto.value = ''; auto.textContent = 'Automatic'; sel.appendChild(auto);
@@ -209,6 +393,7 @@ function fillDevices(d) {
   };
   fill($('selInput'), d.inputs, S.input_device, () => true);
   fill($('selOutput'), d.outputs, S.output_device, (n) => !/cable|virtual|voicemeeter/i.test(n));
+  selects.forEach((s) => s.refresh());
 }
 $('btnApplyDev').addEventListener('click', async () => {
   const input = $('selInput').value || null, output = $('selOutput').value || null;
@@ -254,7 +439,8 @@ function applyTheme(theme) {
   app.classList.toggle('light', light);
   liquid.light = light;
   const ink = light ? '0,0,0' : '255,255,255';
-  viz.ink = ring.ink = eq.ink = ink; viz.bg = light ? '217,217,217' : '4,4,4';
+  viz.ink = ring.ink = eq.ink = peqEd.ink = ink; viz.bg = light ? '217,217,217' : '4,4,4';
+  peqEd.draw();
   eq.dirty = true;
 }
 $('tglLight').addEventListener('change', (e) => { S.theme = e.target.checked ? 'light' : 'dark'; applyTheme(S.theme); invoke('set_ui', { theme: S.theme }); save(); });
@@ -284,6 +470,7 @@ function setStatus(st) {
 function renderStatus() {
   const pill = $('statusPill'), txt = pill.querySelector('span');
   pill.className = 'status-pill';
+  requestAnimationFrame(() => { pill.title = txt.textContent; });
   if (!status.running) { pill.classList.add('warn'); txt.textContent = /CABLE/.test(status.error || '') ? 'Setup needed' : 'Stopped'; }
   else if (S && S.bypass) txt.textContent = 'Bypass';
   else { pill.classList.add('live'); txt.textContent = `Live · ${(status.sample_rate || 48000) / 1000} kHz`; }
@@ -294,6 +481,76 @@ $('setupRetry').addEventListener('click', async () => {
   toast(status.running ? 'Connected!' : 'Virtual cable still not found');
 });
 $('setupLater').addEventListener('click', () => { sessionStorage.setItem('setupLater', '1'); $('setup').classList.remove('show'); });
+
+// ── routing diagnostics: tell the user when nothing is being boosted ──
+const isVirtual = (n) => /cable|virtual|voicemeeter/i.test(n || '');
+let silentSince = 0, lastDefault = null;
+async function checkRouting() {
+  if (!status.running) { hideNotice('route'); hideNotice('silent'); return; }
+  let d;
+  try { d = await invoke('list_devices'); } catch { return; }
+  if (d.default_output !== lastDefault) { lastDefault = d.default_output; dismissed.delete('route'); }
+  if (d.default_output && !isVirtual(d.default_output)) {
+    if (!dismissed.has('route')) showNotice({
+      key: 'route', prio: 3, warn: true,
+      title: 'Not boosting yet',
+      text: `Windows is playing straight to “${d.default_output}”. Set the output to CABLE Input so sound goes through SonicBoost.`,
+      action: 'Open Sound settings', onAction: () => invoke('open_link', { target: 'sound-settings' }),
+    });
+  } else hideNotice('route');
+}
+function checkSilence() {
+  // music is playing but no audio reaches the engine → routing problem
+  const playing = document.querySelector('.np-panel.playing');
+  if (status.running && playing && !(S && S.bypass) && audio.energy < 0.004) {
+    if (!silentSince) silentSince = performance.now();
+    if (performance.now() - silentSince > 5000 && noticeKey !== 'route' && !dismissed.has('silent')) showNotice({
+      key: 'silent', prio: 2, warn: true,
+      title: 'No sound is reaching SonicBoost',
+      text: 'Music is playing, but SonicBoost hears silence. Check that Windows output is CABLE Input and the app is not muted in Volume mixer.',
+      action: 'Open Sound settings', onAction: () => invoke('open_link', { target: 'sound-settings' }),
+    });
+  } else { silentSince = 0; hideNotice('silent'); }
+}
+
+// ── updates ──────────────────────────────────────────────────────────
+let appVersion = '1.0.0';
+const fmtMB = (b) => (b / 1048576).toFixed(1) + ' MB';
+async function checkForUpdates(manual) {
+  const st = $('updateStatus'), btn = $('btnCheckUpdate');
+  btn.disabled = true; st.textContent = 'Checking GitHub…';
+  try {
+    const u = await invoke('check_update');
+    if (u && u.available) {
+      st.textContent = `Version ${u.latest} is available${u.size ? ` (${fmtMB(u.size)})` : ''}.`;
+      btn.textContent = `Update to ${u.latest}`;
+      btn.onclick = () => installUpdate(u);
+      showNotice({
+        key: 'update', prio: 1,
+        title: `Update available: SonicBoost ${u.latest}`,
+        text: `You have ${u.current}. Installs in about a minute and keeps all your settings.`,
+        action: 'Update now', onAction: () => installUpdate(u),
+      });
+    } else {
+      st.textContent = `You're up to date (v${u ? u.current : appVersion}).`;
+      if (manual) toast("You're on the latest version");
+    }
+  } catch (e) {
+    st.textContent = 'Could not check for updates. Are you online?';
+    if (manual) toast('Update check failed');
+  } finally { btn.disabled = false; }
+}
+async function installUpdate(u) {
+  showNotice({ key: 'update', prio: 4, title: `Downloading SonicBoost ${u.latest}…`, text: 'SonicBoost will restart by itself when the update is installed.' });
+  $('notice').classList.add('busy'); $('noticeAction').style.display = 'none';
+  try {
+    await invoke('install_update', { url: u.url });
+  } catch (e) {
+    showNotice({ key: 'update', prio: 4, warn: true, title: 'Update failed', text: String(e), action: 'Try again', onAction: () => installUpdate(u) });
+  }
+}
+$('btnCheckUpdate').addEventListener('click', () => checkForUpdates(true));
+$('tglAutoUpdate').addEventListener('change', (e) => { S.auto_update = e.target.checked; invoke('set_auto_update', { enabled: e.target.checked }); });
 
 // ── cursor-following specular light on the glass ─────────────────────
 let mouse = null;
@@ -333,6 +590,22 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ── boot ─────────────────────────────────────────────────────────────
+/** Puts the backend state into every control without sending anything back. */
+function applySound() {
+  knob.set(S.boost); showBoost(S.boost);
+  $('btnLimiter').classList.toggle('on', S.limiter);
+  pitch.set(S.pitch_semitones, false); showPitch(false);
+  eq.setAll(S.eq);
+  renderPresets();
+  S.peq ||= SIGNATURE();
+  peqEd.load(S.peq); $('peqOn').checked = !!S.peq.enabled;
+  $('rngWidth').value = S.width ?? 1; $('rngBalance').value = S.balance ?? 0;
+  ['rngWidth', 'rngBalance'].forEach((id) => rangeFill($(id)));
+  showStereo();
+  profiles = { profiles: (S.profiles || []).map((p) => p.name), active: S.active_profile || '' };
+  renderProfiles();
+}
+
 async function boot() {
   const st = await invoke('get_state');
   S = st.settings;
@@ -340,18 +613,15 @@ async function boot() {
   applyTheme(S.theme);
   $('tglLight').checked = S.theme === 'light';
   await setMode(S.mode, false);
-  knob.set(S.boost); showBoost(S.boost);
+  applySound();
   setBypass(S.bypass, false);
-  $('btnLimiter').classList.toggle('on', S.limiter);
-  pitch.set(S.pitch_semitones, false); showPitch(false);
-  eq.setAll(S.eq);
-  renderPresets();
   setViz(S.viz_mode || 'radial', false);
-  $('rngWidth').value = S.width ?? 1; $('rngBalance').value = S.balance ?? 0;
   $('rngIntensity').value = S.intensity ?? 1; audio.intensity = S.intensity ?? 1;
-  ['rngWidth', 'rngBalance', 'rngIntensity'].forEach((id) => rangeFill($(id)));
+  rangeFill($('rngIntensity'));
   $('intVal').textContent = `${Math.round(audio.intensity * 100)}%`;
-  showStereo();
+  appVersion = st.version || appVersion;
+  $('appVersion').textContent = appVersion;
+  $('tglAutoUpdate').checked = S.auto_update !== false;
   $('tglAutostart').checked = st.autostart;
   $('tglMinimized').checked = S.start_minimized;
   fillDevices(st.devices);
@@ -362,7 +632,22 @@ async function boot() {
   invoke('media_control', { action: 'refresh' }).catch(() => {});
   listen('engine-status', (s) => { setStatus(s); toast(s.running ? 'Audio device changed — reconnected' : 'Audio device lost'); });
   listen('bypass-changed', (on) => setBypass(on, false));
+  listen('state-reload', async (name) => {
+    const st2 = await invoke('get_state');
+    S = st2.settings; applySound();
+    toast(`Profile: ${name}`);
+  });
   listen('boost-changed', (v) => { S.boost = v; knob.set(v); showBoost(v); toast(`Boost ${Math.round(v * 100)}%`); });
+  listen('update-progress', (p) => {
+    const pct = p.total ? Math.round((p.done / p.total) * 100) : 0;
+    $('noticeProgress').firstElementChild.style.transform = `scaleX(${(pct / 100).toFixed(3)})`;
+    $('noticeText').textContent = p.total ? `${fmtMB(p.done)} of ${fmtMB(p.total)} · ${pct}%` : fmtMB(p.done);
+  });
+
+  checkRouting();
+  setInterval(checkRouting, 5000);
+  setInterval(checkSilence, 1000);
+  if (S.auto_update !== false) setTimeout(() => checkForUpdates(false), 4000);
 
   requestAnimationFrame(() => app.classList.remove('booting'));
   requestAnimationFrame(loop);

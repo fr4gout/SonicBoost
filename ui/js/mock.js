@@ -4,9 +4,14 @@ const state = {
   settings: {
     boost: 1.5, eq: [...PRESET_EQ], preset: 'Flat', pitch_semitones: 0, pitch_cents: 0,
     width: 1, balance: 0, custom_presets: [], bypass: false, limiter: true,
+    peq: { enabled: false, preamp: -5, filters: [
+      { enabled: true, kind: 'PK', freq: 80, gain: -5, q: 10 }, { enabled: true, kind: 'PK', freq: 1800, gain: 3, q: 1 },
+      { enabled: true, kind: 'PK', freq: 3200, gain: 3.5, q: 1.2 }, { enabled: true, kind: 'PK', freq: 8000, gain: -2, q: 1 }] },
+    profiles: [], active_profile: '',
     input_device: null, output_device: null, mode: 'compact', viz_mode: 'radial',
-    theme: 'dark', intensity: 1, start_minimized: true, first_run: false,
+    theme: 'dark', intensity: 1, start_minimized: true, auto_update: true, first_run: false,
   },
+  version: '1.0.0',
   status: { running: true, input: 'CABLE Output (VB-Audio Virtual Cable)', output: 'Speakers (Realtek(R) Audio)', sample_rate: 48000, input_rate: 48000, latency_ms: 35, error: null },
   autostart: true,
   devices: {
@@ -15,6 +20,11 @@ const state = {
     default_output: 'CABLE Input (VB-Audio Virtual Cable)', cable_input: 'CABLE Output (VB-Audio Virtual Cable)', cable_found: true,
   },
 };
+
+state.settings.profiles = [
+  { name: 'SYNC Signature', boost: 1.5, eq: Array(10).fill(0), preset: 'Flat', peq: { ...structuredClone(state.settings.peq), enabled: true }, pitch_semitones: 0, pitch_cents: 0, width: 1, balance: 0, limiter: true },
+  { name: 'Flat (no processing)', boost: 1, eq: Array(10).fill(0), preset: 'Flat', peq: { ...structuredClone(state.settings.peq), enabled: false }, pitch_semitones: 0, pitch_cents: 0, width: 1, balance: 0, limiter: true },
+];
 
 const listeners = {};
 const emit = (ev, data) => (listeners[ev] || []).forEach((cb) => cb(data));
@@ -110,11 +120,33 @@ export const mock = {
     const s = state.settings;
     switch (cmd) {
       case 'get_state': return structuredClone(state);
-      case 'list_devices': return state.devices;
+      case 'list_devices': return /route/.test(location.search) ? { ...state.devices, default_output: 'Speakers (Realtek(R) Audio)' } : state.devices;
       case 'set_boost': s.boost = a.value; break;
       case 'set_eq_band': s.eq[a.index] = a.gain; s.preset = 'Custom'; break;
       case 'set_eq': s.eq = [...a.gains]; s.preset = a.preset; break;
       case 'set_pitch': s.pitch_semitones = a.semitones; s.pitch_cents = a.cents; break;
+      case 'set_peq': s.peq = a.peq; s.active_profile = ''; break;
+      case 'list_profiles': return { profiles: s.profiles.map((p) => p.name), active: s.active_profile };
+      case 'save_profile': {
+        const snap = { name: a.name, boost: s.boost, eq: [...s.eq], preset: s.preset, peq: structuredClone(s.peq), pitch_semitones: s.pitch_semitones, pitch_cents: s.pitch_cents, width: s.width, balance: s.balance, limiter: s.limiter };
+        const i = s.profiles.findIndex((p) => p.name.toLowerCase() === a.name.toLowerCase());
+        if (i >= 0) s.profiles[i] = snap; else s.profiles.push(snap);
+        s.active_profile = a.name;
+        return { profiles: s.profiles.map((p) => p.name), active: s.active_profile };
+      }
+      case 'apply_profile': {
+        const p = s.profiles.find((x) => x.name === a.name);
+        Object.assign(s, structuredClone(p)); delete s.name; s.active_profile = a.name;
+        setTimeout(() => emit('state-reload', a.name), 30);
+        return a.name;
+      }
+      case 'delete_profile':
+        s.profiles = s.profiles.filter((p) => p.name !== a.name);
+        if (s.active_profile === a.name) s.active_profile = '';
+        return { profiles: s.profiles.map((p) => p.name), active: s.active_profile };
+      case 'win_state': return { maximized: !!state.win?.max, fullscreen: !!state.win?.fs };
+      case 'win_toggle_maximize': state.win = { ...state.win, max: !state.win?.max, fs: false }; return { maximized: state.win.max, fullscreen: false };
+      case 'win_toggle_fullscreen': state.win = { ...state.win, fs: !state.win?.fs }; return { maximized: !!state.win.max, fullscreen: state.win.fs };
       case 'set_stereo': s.width = a.width; s.balance = a.balance; break;
       case 'set_custom_presets': s.custom_presets = a.presets; break;
       case 'set_bypass': s.bypass = a.enabled; break;
@@ -125,6 +157,11 @@ export const mock = {
       case 'start_engine': return state.status;
       case 'stop_engine': return { ...state.status, running: false };
       case 'set_autostart': state.autostart = a.enabled; return a.enabled;
+      case 'check_update': return /update/.test(location.search)
+        ? { current: '1.0.0', latest: '1.0.1', available: true, notes: '', url: 'https://github.com/fr4gout/SonicBoost/releases/download/v1.0.1/SonicBoost_1.0.1_x64-setup.exe', page: '', size: 4718592 }
+        : { current: '1.0.0', latest: '1.0.0', available: false, notes: '', url: null, page: '', size: 0 };
+      case 'install_update': { let d = 0; const t = setInterval(() => { d += 400000; emit('update-progress', { done: Math.min(d, 4718592), total: 4718592 }); if (d >= 4718592) clearInterval(t); }, 150); return new Promise(() => {}); }
+      case 'set_auto_update': state.settings.auto_update = a.enabled; break;
       case 'media_control':
         if (a.action === 'refresh') { setTimeout(() => emit('media-status', mediaStatus(true)), 50); break; }
         if (a.action === 'play_pause') playing = !playing;
