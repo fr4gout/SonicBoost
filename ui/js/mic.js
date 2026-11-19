@@ -217,6 +217,13 @@ export class MicView {
     $('micStateTitle').textContent = title;
     $('micStateText').textContent = text;
     $('micStateText').title = text;
+    const heard = on && s.running ? (s.listening || []) : [];
+    const box = $('micListen');
+    box.hidden = !heard.length;
+    if (heard.length) {
+      box.innerHTML = `<span><b>This is why you hear yourself:</b> Windows is playing <b>${heard.map(esc).join('</b> and <b>')}</b> to your speakers (“Listen to this device”). Open it, go to the <b>Listen</b> tab and untick the box.</span><button class="chip small" id="micListenFix">Open Recording devices</button>`;
+      $('micListenFix').onclick = () => invoke('open_link', { target: 'recording' }).catch((e) => this.toast(String(e)));
+    }
     $('micInfo').textContent = on && s.running ? `48 kHz mono · ${s.latency_ms || 35} ms · monitor ${s.monitor ? 'on' : 'off'}` : '';
   }
 

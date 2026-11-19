@@ -193,8 +193,23 @@ pub fn list_devices() -> DeviceList {
     DeviceList { cable_found: cable_input.is_some(), inputs, outputs, default_output, cable_input }
 }
 
+// The cable the mic sends your processed voice into (its playback name, e.g.
+// "CABLE In 16ch"). The booster must never record its other end, or your own
+// voice comes out of the speakers even with the monitor off.
+static MIC_CABLE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+pub fn set_mic_cable(render_name: Option<String>) {
+    *MIC_CABLE.lock().unwrap() = render_name;
+}
+/// True when recording `capture_name` would pick up the mic's processed voice.
+pub fn is_mic_cable(capture_name: &str) -> bool {
+    MIC_CABLE.lock().unwrap().as_deref().is_some_and(|m| crate::mic::render_side_of(capture_name) == m)
+}
+
 fn find_input(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device> {
-    let devices: Vec<cpal::Device> = host.input_devices()?.collect();
+    let devices: Vec<cpal::Device> = host
+        .input_devices()?
+        .filter(|d| d.name().map(|n| !is_mic_cable(&n)).unwrap_or(true))
+        .collect();
     if let Some(want) = name {
         if let Some(d) = devices.iter().find(|d| d.name().map(|n| n == want).unwrap_or(false)) {
             return Ok(d.clone());

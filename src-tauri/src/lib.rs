@@ -133,15 +133,31 @@ impl AppState {
 
     fn restart_mic(&self) -> mic::MicStatus {
         let m = self.settings.lock().unwrap().mic.clone();
-        let st = if m.enabled {
+        let mut st = if m.enabled {
             let monitor = if m.monitor_on { Some(m.monitor_device.clone().unwrap_or_else(|| "default".into())) } else { None };
             self.apply_mic();
-            self.mic_engine.lock().unwrap().start(m.input, m.output, monitor, self.forbidden_mic_output())
+            let st = self.mic_engine.lock().unwrap().start(m.input, m.output, monitor, self.forbidden_mic_output());
+            st
         } else {
             self.mic.monitor_on.store(false, Ordering::Relaxed);
             self.mic_engine.lock().unwrap().stop();
             mic::MicStatus::default()
         };
+        // Never let the booster record the mic's cable: that plays your voice
+        // through the speakers even with the monitor off.
+        audio::set_mic_cable(if st.running { st.output.clone() } else { None });
+        let booster_in = self.status.lock().unwrap().input.clone();
+        if st.running && booster_in.as_deref().is_some_and(audio::is_mic_cable) {
+            self.restart();
+        }
+        if st.running {
+            // Windows' own "Listen to this device" on your mic or the cable
+            let mic_in = st.input.clone().unwrap_or_default();
+            st.listening = mic::listen_enabled()
+                .into_iter()
+                .filter(|n| *n == mic_in || audio::is_cable(n))
+                .collect();
+        }
         *self.mic_status.lock().unwrap() = st.clone();
         st
     }
@@ -694,12 +710,13 @@ fn open_link(target: String) -> Result<(), String> {
     let url = match target.as_str() {
         "sound-settings" => "ms-settings:sound",
         "sound-panel" => "mmsys.cpl",
+        "recording" => "mmsys.cpl,,1",
         "vbcable" => "https://vb-audio.com/Cable/",
         _ => return Err("unknown link".into()),
     };
     #[cfg(windows)]
     {
-        let prog = if url.ends_with(".cpl") { "control" } else { "explorer" };
+        let prog = if url.contains(".cpl") { "control" } else { "explorer" };
         std::process::Command::new(prog).arg(url).spawn().map_err(|e| e.to_string())?;
     }
     #[cfg(not(windows))]

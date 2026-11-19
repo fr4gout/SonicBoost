@@ -103,6 +103,9 @@ pub struct MicStatus {
     pub monitor: Option<String>,
     pub latency_ms: u32,
     pub error: Option<String>,
+    /// Recording devices that Windows itself plays to the speakers
+    /// ("Listen to this device"): the usual cause of hearing yourself.
+    pub listening: Vec<String>,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -115,6 +118,64 @@ pub struct MicDevices {
 
 /// "CABLE Output (…)" (what the booster listens to) → "CABLE Input (…)":
 /// the mic must never be written into the booster's own cable.
+/// Names of recording devices with Windows' "Listen to this device" switched on.
+/// Read from the registry (MMDevices), so no audio APIs are touched.
+#[cfg(windows)]
+pub fn listen_enabled() -> Vec<String> {
+    use std::collections::HashMap;
+    use std::os::windows::process::CommandExt;
+    const ROOT: &str = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture";
+    const LISTEN: &str = "{24dbb0fc-9311-4b3d-9cf0-18ff155639d4},1";
+    const DESC: &str = "{a45c254e-df1c-4efd-8020-67d146a850e0},2";
+    const IFACE: &str = "{b3f8fa53-0004-438e-9003-51a46e139bfc},6";
+    // value name → (device key → data)
+    let query = |value: &str| -> HashMap<String, String> {
+        let mut out = HashMap::new();
+        let Ok(o) = std::process::Command::new("reg")
+            .args(["query", ROOT, "/s", "/v", value])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .output()
+        else {
+            return out;
+        };
+        let text = String::from_utf8_lossy(&o.stdout);
+        let mut key = String::new();
+        for line in text.lines() {
+            if line.starts_with("HKEY_") {
+                key = line.trim().trim_end_matches("\\Properties").to_string();
+            } else if let Some(rest) = line.trim().strip_prefix(value) {
+                let mut parts = rest.split_whitespace();
+                let _kind = parts.next();
+                let data: Vec<&str> = parts.collect();
+                out.insert(key.clone(), data.join(" "));
+            }
+        }
+        out
+    };
+    let listen = query(LISTEN);
+    if listen.is_empty() {
+        return Vec::new();
+    }
+    let desc = query(DESC);
+    let iface = query(IFACE);
+    listen
+        .into_iter()
+        // REG_BINARY PROPVARIANT: VT_BOOL (0B00) with boolVal at byte 8; TRUE = FFFF
+        .filter(|(_, hex)| hex.len() >= 20 && hex[..4].eq_ignore_ascii_case("0B00") && hex[16..20].eq_ignore_ascii_case("FFFF"))
+        .filter_map(|(k, _)| {
+            let d = desc.get(&k)?;
+            Some(match iface.get(&k) {
+                Some(i) if !i.is_empty() => format!("{d} ({i})"),
+                _ => d.clone(),
+            })
+        })
+        .collect()
+}
+#[cfg(not(windows))]
+pub fn listen_enabled() -> Vec<String> {
+    Vec::new()
+}
+
 pub fn render_side_of(capture_name: &str) -> String {
     capture_name.replacen("Output", "Input", 1).replacen("CABLE Out ", "CABLE In ", 1)
 }

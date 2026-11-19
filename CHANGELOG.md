@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-11-20
+
+### Fixed
+- **Hearing yourself with the monitor off.** The booster can no longer record the cable the mic sends your voice into, even if it was picked by hand, and switches away from it the moment the mic starts. If Windows itself is playing your mic or a cable to the speakers (*Listen to this device*), the Mic view now says so and opens the setting for you.
+
 ## [1.0.3] - 2026-11-20
 
 ### Fixed
@@ -99,7 +104,8 @@ First public release.
 - The analyzer pauses while the window is hidden.
 - NSIS (`-setup.exe`) and MSI installers.
 
-[Unreleased]: https://github.com/fr4gout/SonicBoost/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/fr4gout/SonicBoost/compare/v1.0.4...HEAD
+[1.0.4]: https://github.com/fr4gout/SonicBoost/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/fr4gout/SonicBoost/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/fr4gout/SonicBoost/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/fr4gout/SonicBoost/compare/v1.0.0...v1.0.1
