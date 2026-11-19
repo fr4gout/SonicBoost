@@ -5,6 +5,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-11-20
+
+### Fixed
+- **Smoother, faster window.** Commands that open audio devices, list devices or save settings now run off the window's UI thread, so clicks answer at once and opening, closing and dragging the window no longer stall. Meter and spectrum updates pause while the window is moved, so it no longer stutters or freezes during a drag. The booster stops drawing its hidden panels while the Mic view is open.
+- **Mic monitor really turns off.** A hard switch silences the monitor the moment you turn it (or the mic) off. *Windows default* monitoring now always uses your real speakers or headphones, never a virtual cable, which used to send your voice through the booster.
+- With two virtual cables installed, the booster now listens to the cable that matches the Windows default output and never picks the mic's 16-channel cable.
+- Compact view: the mic preset and voice-mode rows scroll with the mouse wheel or by dragging, the selected item scrolls into view, and the title bar buttons line up evenly.
+- Every scrollbar now uses the app's theme instead of the Windows style.
+
 ## [1.0.2] - 2026-11-20
 
 ### Added: SonicBoost Mic
@@ -90,7 +99,8 @@ First public release.
 - The analyzer pauses while the window is hidden.
 - NSIS (`-setup.exe`) and MSI installers.
 
-[Unreleased]: https://github.com/fr4gout/SonicBoost/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/fr4gout/SonicBoost/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/fr4gout/SonicBoost/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/fr4gout/SonicBoost/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/fr4gout/SonicBoost/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/fr4gout/SonicBoost/releases/tag/v1.0.0

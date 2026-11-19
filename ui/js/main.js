@@ -376,6 +376,7 @@ async function setMode(mode, user = true) {
 $('btnMode').addEventListener('click', () => setMode(S.mode === 'compact' ? 'extended' : 'compact'));
 // ── mic view ─────────────────────────────────────────────────────────
 const mic = new MicView({ app, toast });
+let micOn = false;
 function setMicView(on, user = true) {
   if (user) {
     app.classList.add('morphing');
@@ -383,6 +384,7 @@ function setMicView(on, user = true) {
   } else apply();
   function apply() {
     app.classList.toggle('mic', on);
+    micOn = on;
     app.classList.remove('sheet'); $('btnSettings').classList.remove('active');
     $('btnMicView').title = on ? 'Back to the sound booster' : 'Mic: voice processing, voice modes, soundboard';
     mic.setVisible(on);
@@ -686,6 +688,7 @@ let lastEnergy = -1, energyT = 0, bgT = 0;
 // ── render loop ──────────────────────────────────────────────────────
 let last = performance.now(), running = true;
 let frameAcc = 0;
+const meterL = $('meterL'), meterR = $('meterR');
 function loop(now) {
   if (!running) return;
   requestAnimationFrame(loop);
@@ -709,12 +712,12 @@ function loop(now) {
     }
   }
   if (Q.bgFps) { bgT += dt; if (bgT >= 1 / Q.bgFps) { liquid.draw(bgT); bgT = 0; } }
+  if (micOn) { mic.tick(); updateSheen(); return; } // booster panels are hidden: draw nothing for them
   viz.draw(dt);
   ring.draw(dt, knobRadius, !(S && S.bypass));
   knob.tick(dt); pitch.tick(dt); eq.tick(dt); np.tick(dt);
-  if (app.classList.contains('mic')) mic.tick();
-  $('meterL').style.setProperty('--v', Math.min(1, audio.peakL).toFixed(3));
-  $('meterR').style.setProperty('--v', Math.min(1, audio.peakR).toFixed(3));
+  meterL.style.setProperty('--v', Math.min(1, audio.peakL).toFixed(3));
+  meterR.style.setProperty('--v', Math.min(1, audio.peakR).toFixed(3));
   updateSheen();
 }
 document.addEventListener('visibilitychange', () => {

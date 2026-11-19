@@ -106,6 +106,7 @@ impl AppState {
         let muted = m.muted || (m.ptt == "ptt" && !down) || (m.ptt == "ptm" && down);
         self.mic.ns_on.store(c.ns, Ordering::Relaxed);
         self.mic.monitor_vol.set(m.monitor_volume.clamp(0.0, 1.5));
+        self.mic.monitor_on.store(m.enabled && m.monitor_on, Ordering::Relaxed);
         self.mic.set_params(micdsp::MicParams {
             boost_db: c.boost_db,
             gate_on: c.gate_on,
@@ -137,6 +138,7 @@ impl AppState {
             self.apply_mic();
             self.mic_engine.lock().unwrap().start(m.input, m.output, monitor, self.forbidden_mic_output())
         } else {
+            self.mic.monitor_on.store(false, Ordering::Relaxed);
             self.mic_engine.lock().unwrap().stop();
             mic::MicStatus::default()
         };
@@ -170,7 +172,7 @@ struct FullState {
 
 // ---------------------------------------------------------------- commands
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_state(app: AppHandle, state: State<AppState>) -> FullState {
     FullState {
         version: app.package_info().version.to_string(),
@@ -181,7 +183,7 @@ fn get_state(app: AppHandle, state: State<AppState>) -> FullState {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_devices() -> audio::DeviceList {
     audio::list_devices()
 }
@@ -230,7 +232,7 @@ fn set_stereo(state: State<AppState>, width: f32, balance: f32) {
     });
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_custom_presets(state: State<AppState>, presets: Vec<settings::CustomPreset>) -> Result<(), String> {
     state.update(|s| s.custom_presets = presets);
     state.save()
@@ -255,13 +257,13 @@ fn apply_window_effect(w: &tauri::WebviewWindow, theme: &str) -> Result<(), Stri
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_window_effect(app: AppHandle, theme: String) -> Result<(), String> {
     let w = app.get_webview_window("main").ok_or("window missing")?;
     apply_window_effect(&w, &theme)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_follow_volume(state: State<AppState>, enabled: bool) -> Result<(), String> {
     state.update(|s| s.follow_windows_volume = enabled);
     state.save()
@@ -275,7 +277,7 @@ fn set_ambience(state: State<AppState>, ambience: settings::AmbienceCfg) {
 
 /// Creates (or replaces) profiles from imported Equalizer APO files without
 /// changing the current sound. Each entry is a full profile.
-#[tauri::command]
+#[tauri::command(async)]
 fn import_profiles(app: AppHandle, state: State<AppState>, profiles: Vec<settings::Profile>) -> Result<ProfilesDto, String> {
     let dto = {
         let mut s = state.settings.lock().unwrap();
@@ -320,7 +322,7 @@ struct MicState {
     modes: Vec<&'static str>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn mic_get(state: State<AppState>) -> MicState {
     MicState {
         settings: state.settings.lock().unwrap().mic.clone(),
@@ -333,7 +335,7 @@ fn mic_get(state: State<AppState>) -> MicState {
 
 /// Saves the whole mic configuration. Devices / on-off changes restart the
 /// mic engine; everything else applies instantly.
-#[tauri::command]
+#[tauri::command(async)]
 fn mic_set(state: State<AppState>, mic: settings::MicSettings) -> Result<mic::MicStatus, String> {
     let restart = {
         let mut s = state.settings.lock().unwrap();
@@ -354,7 +356,7 @@ fn mic_set(state: State<AppState>, mic: settings::MicSettings) -> Result<mic::Mi
     Ok(st)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn mic_mute(app: AppHandle, state: State<AppState>, muted: Option<bool>) -> bool {
     let now = {
         let mut s = state.settings.lock().unwrap();
@@ -367,7 +369,7 @@ fn mic_mute(app: AppHandle, state: State<AppState>, muted: Option<bool>) -> bool
     now
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn mic_test(state: State<AppState>, action: String) -> Result<(), String> {
     if !state.mic.running.load(Ordering::Acquire) {
         return Err("Turn the mic on first".into());
@@ -397,7 +399,7 @@ fn soundboard_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 /// Adds a .wav clip to the soundboard (a copy is kept in the app folder).
-#[tauri::command]
+#[tauri::command(async)]
 fn sb_add(app: AppHandle, state: State<AppState>, name: String, bytes: Vec<u8>) -> Result<Vec<settings::SoundClip>, String> {
     let clip = micdsp::decode_wav(&bytes)?;
     if state.settings.lock().unwrap().mic.soundboard.len() >= 16 {
@@ -417,7 +419,7 @@ fn sb_add(app: AppHandle, state: State<AppState>, name: String, bytes: Vec<u8>) 
     Ok(list)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn sb_remove(state: State<AppState>, index: usize) -> Result<Vec<settings::SoundClip>, String> {
     let list = {
         let mut s = state.settings.lock().unwrap();
@@ -490,13 +492,13 @@ fn apply_profile_at(app: &AppHandle, index: usize) -> Result<String, String> {
     Ok(name)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_profiles(state: State<AppState>) -> ProfilesDto {
     profiles_dto(&state.settings.lock().unwrap())
 }
 
 /// Saves the current sound under `name` (overwrites a profile with that name).
-#[tauri::command]
+#[tauri::command(async)]
 fn save_profile(app: AppHandle, state: State<AppState>, name: String) -> Result<ProfilesDto, String> {
     let name = name.trim().chars().take(32).collect::<String>();
     if name.is_empty() {
@@ -522,13 +524,13 @@ fn save_profile(app: AppHandle, state: State<AppState>, name: String) -> Result<
     Ok(dto)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn apply_profile(app: AppHandle, state: State<AppState>, name: String) -> Result<String, String> {
     let idx = state.settings.lock().unwrap().profiles.iter().position(|p| p.name == name).ok_or("Profile not found")?;
     apply_profile_at(&app, idx)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_profile(app: AppHandle, state: State<AppState>, name: String) -> Result<ProfilesDto, String> {
     let dto = {
         let mut s = state.settings.lock().unwrap();
@@ -559,7 +561,7 @@ fn set_limiter(state: State<AppState>, enabled: bool) {
     state.update(|s| s.limiter = enabled);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_ui(
     state: State<AppState>,
     viz: Option<String>,
@@ -583,7 +585,7 @@ fn set_ui(
     });
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_mode(app: AppHandle, state: State<AppState>, mode: String) -> Result<(), String> {
     let w = app.get_webview_window("main").ok_or("window missing")?;
     if mode == "compact" {
@@ -596,7 +598,7 @@ fn set_mode(app: AppHandle, state: State<AppState>, mode: String) -> Result<(), 
     state.save()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_devices(state: State<AppState>, input: Option<String>, output: Option<String>) -> EngineStatus {
     state.update(|s| {
         s.input_device = input;
@@ -607,12 +609,12 @@ fn set_devices(state: State<AppState>, input: Option<String>, output: Option<Str
     st
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn start_engine(state: State<AppState>) -> EngineStatus {
     state.restart()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn stop_engine(state: State<AppState>) -> EngineStatus {
     state.engine.lock().unwrap().stop();
     let st = EngineStatus::default();
@@ -620,7 +622,7 @@ fn stop_engine(state: State<AppState>) -> EngineStatus {
     st
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
     let al = app.autolaunch();
     let res = if enabled { al.enable() } else { al.disable() };
@@ -628,7 +630,7 @@ fn set_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
     al.is_enabled().map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_start_minimized(state: State<AppState>, enabled: bool) -> Result<(), String> {
     state.update(|s| s.start_minimized = enabled);
     state.save()
@@ -665,13 +667,13 @@ async fn install_update(app: AppHandle, url: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_auto_update(state: State<AppState>, enabled: bool) -> Result<(), String> {
     state.update(|s| s.auto_update = enabled);
     state.save()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_settings(state: State<AppState>) -> Result<(), String> {
     state.save()
 }
@@ -687,7 +689,7 @@ fn media_control(state: State<AppState>, action: String) {
     state.media.send(cmd);
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_link(target: String) -> Result<(), String> {
     let url = match target.as_str() {
         "sound-settings" => "ms-settings:sound",
@@ -1028,6 +1030,9 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             // Closing the window keeps the booster running in the tray.
+            if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {
+                audio::mark_ui_busy();
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
                 api.prevent_close();

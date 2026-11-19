@@ -161,6 +161,23 @@ pub fn is_cable(name: &str) -> bool {
     n.contains("cable") || n.contains("voicemeeter") || n.contains("virtual")
 }
 
+/// The cable the booster should listen to: the capture side of the Windows
+/// default output when that is a cable ("CABLE Input" → "CABLE Output"),
+/// otherwise a cable that isn't the mic's 16-channel one.
+pub fn pick_cable<'a>(inputs: &'a [String], default_output: Option<&str>) -> Option<&'a String> {
+    let cables: Vec<&String> = inputs.iter().filter(|n| is_cable(n)).collect();
+    if let Some(out) = default_output.filter(|o| is_cable(o)) {
+        if let Some(c) = cables.iter().find(|n| crate::mic::render_side_of(n) == out) {
+            return Some(c);
+        }
+    }
+    cables
+        .iter()
+        .find(|n| !n.to_lowercase().contains("16ch"))
+        .or_else(|| cables.first())
+        .copied()
+}
+
 pub fn list_devices() -> DeviceList {
     let host = cpal::default_host();
     let inputs: Vec<String> = host
@@ -172,7 +189,7 @@ pub fn list_devices() -> DeviceList {
         .map(|it| it.filter_map(|d| d.name().ok()).collect())
         .unwrap_or_default();
     let default_output = host.default_output_device().and_then(|d| d.name().ok());
-    let cable_input = inputs.iter().find(|n| is_cable(n)).cloned();
+    let cable_input = pick_cable(&inputs, default_output.as_deref()).cloned();
     DeviceList { cable_found: cable_input.is_some(), inputs, outputs, default_output, cable_input }
 }
 
@@ -183,9 +200,12 @@ fn find_input(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device> {
             return Ok(d.clone());
         }
     }
+    let names: Vec<String> = devices.iter().map(|d| d.name().unwrap_or_default()).collect();
+    let default_out = host.default_output_device().and_then(|d| d.name().ok());
+    let pick = pick_cable(&names, default_out.as_deref()).cloned();
     devices
         .into_iter()
-        .find(|d| d.name().map(|n| is_cable(&n)).unwrap_or(false))
+        .find(|d| d.name().ok() == pick)
         .ok_or_else(|| anyhow!("CABLE_NOT_FOUND: No virtual audio cable found. Install VB-Audio Virtual Cable, then press Refresh."))
 }
 
@@ -469,6 +489,23 @@ impl Serialize for Frame {
 }
 
 /// Emits an `audio-frame` event to the UI ~60 times per second.
+// While the window is being dragged or resized, Windows runs a modal loop on
+// the UI thread. Events sent then pile up and replay as a stutter afterwards,
+// so the meter streams pause for a moment around every move.
+static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+static QUIET_UNTIL: AtomicU64 = AtomicU64::new(0);
+fn now_ms() -> u64 {
+    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+/// Called on window move / resize.
+pub fn mark_ui_busy() {
+    QUIET_UNTIL.store(now_ms() + 250, Ordering::Relaxed);
+}
+/// True while the window is moving: skip UI-only events.
+pub fn ui_busy() -> bool {
+    now_ms() < QUIET_UNTIL.load(Ordering::Relaxed)
+}
+
 pub fn spawn_analyzer(app: AppHandle, shared: Arc<Shared>) {
     thread::Builder::new()
         .name("analyzer".into())
@@ -482,8 +519,8 @@ pub fn spawn_analyzer(app: AppHandle, shared: Arc<Shared>) {
                 while let Some(s) = shared.analysis.pop() {
                     fresh.push(s);
                 }
-                if !shared.viz_active.load(Ordering::Relaxed) {
-                    continue; // window hidden: skip FFT work entirely
+                if !shared.viz_active.load(Ordering::Relaxed) || ui_busy() {
+                    continue; // window hidden or being dragged: skip FFT work entirely
                 }
                 if !shared.running.load(Ordering::Acquire) {
                     if !idle_sent {
@@ -504,4 +541,17 @@ pub fn spawn_analyzer(app: AppHandle, shared: Arc<Shared>) {
             }
         })
         .expect("spawn analyzer");
+}
+
+#[cfg(test)]
+mod cable_tests {
+    use super::pick_cable;
+    #[test]
+    fn booster_never_grabs_the_mic_cable() {
+        let ins = vec!["CABLE Out 16ch (VB-Audio Virtual Cable)".to_string(), "Microphone (USB)".to_string(), "CABLE Output (VB-Audio Virtual Cable)".to_string()];
+        assert_eq!(pick_cable(&ins, Some("CABLE Input (VB-Audio Virtual Cable)")).unwrap(), &ins[2]);
+        assert_eq!(pick_cable(&ins, Some("Speakers (Realtek)")).unwrap(), &ins[2]);
+        let only16 = vec!["CABLE Out 16ch (VB-Audio Virtual Cable)".to_string()];
+        assert_eq!(pick_cable(&only16, None).unwrap(), &only16[0]);
+    }
 }

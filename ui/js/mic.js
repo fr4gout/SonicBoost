@@ -33,6 +33,40 @@ const VALUE_FMT = {
 const SAME = (a, b) => ['ns', 'boost_db', 'gate_on', 'gate_db', 'eq_preset', 'comp_on', 'comp_amount', 'deess_on', 'deess_amount', 'limiter_on', 'out_db']
   .every((k) => (typeof a[k] === 'number' ? Math.abs(a[k] - b[k]) < 1e-3 : a[k] === b[k]));
 
+/** Horizontal row (compact view): mouse wheel, drag and click-through. */
+function hScroll(box) {
+  const scrolls = () => box.scrollWidth > box.clientWidth + 2;
+  box.addEventListener('wheel', (e) => {
+    if (!scrolls()) return;
+    const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (!d) return;
+    e.preventDefault();
+    box.scrollBy({ left: d * 1.2, behavior: 'smooth' });
+  }, { passive: false });
+  let down = null, moved = false;
+  box.addEventListener('pointerdown', (e) => {
+    if (!scrolls() || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    down = { x: e.clientX, left: box.scrollLeft, id: e.pointerId }; moved = false;
+  });
+  box.addEventListener('pointermove', (e) => {
+    if (!down) return;
+    const dx = e.clientX - down.x;
+    if (!moved && Math.abs(dx) > 5) { moved = true; box.classList.add('dragging'); box.setPointerCapture(down.id); }
+    if (moved) box.scrollLeft = down.left - dx;
+  });
+  const end = () => { if (down && moved) setTimeout(() => box.classList.remove('dragging'), 0); down = null; };
+  box.addEventListener('pointerup', end); box.addEventListener('pointercancel', end);
+  box.addEventListener('click', (e) => { if (moved) { e.stopPropagation(); e.preventDefault(); moved = false; } }, true);
+}
+/** Brings the active item of a scrolling row into view without moving the window. */
+function reveal(box, sel) {
+  const a = box.querySelector(sel);
+  if (!a || box.scrollWidth <= box.clientWidth) return;
+  const l = a.getBoundingClientRect().left - box.getBoundingClientRect().left + box.scrollLeft, r = l + a.offsetWidth;
+  if (l < box.scrollLeft) box.scrollTo({ left: l - 12, behavior: 'smooth' });
+  else if (r > box.scrollLeft + box.clientWidth) box.scrollTo({ left: r - box.clientWidth + 24, behavior: 'smooth' });
+}
+
 export class MicView {
   constructor({ app, toast }) {
     this.app = app;
@@ -48,6 +82,8 @@ export class MicView {
     this.ctx = this.wave.getContext('2d');
     this.sendT = 0;
     this.bind();
+    hScroll($('micPresets'));
+    hScroll($('micModes'));
   }
 
   // ── data ───────────────────────────────────────────────────────────
@@ -94,6 +130,7 @@ export class MicView {
     $('micPresetName').textContent = name;
     $('micPresets').innerHTML = this.allPresets().map((p, i) =>
       `<button class="chip${p.name === name ? ' active' : ''}" data-i="${i}" title="${esc(p.name)}">${esc(p.name)}${p.builtin ? '' : '<span class="x" data-del="1">×</span>'}</button>`).join('');
+    requestAnimationFrame(() => reveal($('micPresets'), '.chip.active'));
   }
 
   renderModes() {
@@ -102,6 +139,7 @@ export class MicView {
       const [t, d] = MODES[m] || [m, ''];
       return `<button class="mode${m === cur ? ' active' : ''}" data-m="${m}" title="${t}${i < 9 ? ` (Ctrl+Shift+${i + 1})` : ''}"><b>${t}</b><small>${d}</small>${i < 9 ? `<span class="key">⇧${i + 1}</span>` : ''}</button>`;
     }).join('');
+    requestAnimationFrame(() => reveal($('micModes'), '.mode.active'));
     $('customVoice').classList.toggle('show', cur === 'custom');
     $('cvPitch').value = this.M.cfg.custom_pitch; $('cvRoom').value = this.M.cfg.custom_room;
     this.showCustom();
@@ -344,6 +382,8 @@ export class MicView {
     const f = this.frame;
     if (!f) return;
     const db = (v) => Math.max(0, Math.min(1, (20 * Math.log10(Math.max(v, 1e-5)) + 60) / 60));
+    if (f === this.lastFrame) return; // nothing new from the engine since the last draw
+    this.lastFrame = f;
     $('mmIn').style.setProperty('--v', db(f.input).toFixed(3));
     $('mmOut').style.setProperty('--v', db(f.output).toFixed(3));
     $('mmGr').style.setProperty('--v', Math.min(1, (f.gr_db || 0) / 18).toFixed(3));
@@ -365,7 +405,10 @@ export class MicView {
     g.setTransform(r, 0, 0, r, 0, 0);
     g.clearRect(0, 0, W, H);
     if (!w.length) return;
-    const ink = getComputedStyle(this.app).getPropertyValue('--ink').trim() || '#fff';
+    // reading a CSS variable forces a style pass: refresh the colour twice a second, not every frame
+    const t = performance.now();
+    if (!this.ink || t - this.inkT > 500) { this.ink = getComputedStyle(this.app).getPropertyValue('--ink').trim() || '#fff'; this.inkT = t; }
+    const ink = this.ink;
     const mid = H * 0.5, amp = H * 0.44;
     g.lineWidth = 1.5; g.strokeStyle = ink; g.globalAlpha = 0.9;
     g.beginPath();

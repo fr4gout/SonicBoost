@@ -33,6 +33,9 @@ pub struct MicShared {
     pub running: AtomicBool,
     pub device_error: AtomicBool,
     pub monitor_vol: AtomicF32,
+    /// Hard switch for the monitor: when false nothing reaches the headphones,
+    /// even before the engine has finished restarting.
+    pub monitor_on: AtomicBool,
     pub in_level: AtomicF32,
     pub out_level: AtomicF32,
     pub gr_db: AtomicF32,
@@ -54,6 +57,7 @@ impl MicShared {
             running: AtomicBool::new(false),
             device_error: AtomicBool::new(false),
             monitor_vol: AtomicF32::new(0.8),
+            monitor_on: AtomicBool::new(false),
             in_level: AtomicF32::new(0.0),
             out_level: AtomicF32::new(0.0),
             gr_db: AtomicF32::new(0.0),
@@ -225,7 +229,10 @@ fn build(
     }
     let out_dev = find(&host, Some(&out_name), false)?.ok_or_else(|| anyhow!("Mic output \"{out_name}\" not found."))?;
     let mon_dev = match monitor {
-        Some("default") | Some("") => host.default_output_device(),
+        Some("default") | Some("") => host
+            .default_output_device()
+            .filter(|d| d.name().map(|n| !is_cable(&n)).unwrap_or(false))
+            .or_else(|| host.output_devices().ok()?.find(|d| d.name().map(|n| !is_cable(&n)).unwrap_or(false))),
         Some(n) => find(&host, Some(n), false)?,
         None => None,
     };
@@ -370,7 +377,7 @@ where
                         c.to_cable.push(y, y, |a, _| {
                             c.cable.push(a);
                         });
-                        if let Some(r) = &c.mon {
+                        if let (Some(r), true) = (&c.mon, sh.monitor_on.load(Ordering::Relaxed)) {
                             c.to_mon.push(y, y, |a, _| {
                                 r.push(a);
                             });
@@ -435,7 +442,14 @@ where
             if primed && avail > target * 4 {
                 ring.skip(avail - target);
             }
-            let vol = if monitor { shared.monitor_vol.get() } else { 1.0 };
+            let vol = match (monitor, shared.monitor_on.load(Ordering::Relaxed)) {
+                (false, _) => 1.0,
+                (true, true) => shared.monitor_vol.get(),
+                (true, false) => {
+                    ring.skip(ring.len());
+                    0.0
+                }
+            };
             for frame in data.chunks_mut(ch) {
                 let mut s = 0.0;
                 if primed {
@@ -481,6 +495,7 @@ pub fn play_test(device: Option<String>, samples: Vec<f32>) -> Result<(), String
         let secs = samples.len() as f32 / 48_000.0;
         let dummy = MicShared::new();
         dummy.monitor_vol.set(1.0);
+        dummy.monitor_on.store(true, Ordering::Relaxed);
         if let Ok(stream) = playback_any(&dev, &sup, &cfg, ring, dummy, true) {
             if stream.play().is_ok() {
                 thread::sleep(Duration::from_secs_f32(secs + 0.4));
@@ -516,7 +531,7 @@ pub fn spawn_meters(app: AppHandle, shared: Arc<MicShared>, visible: Arc<AtomicB
                 if hist.len() > 1024 {
                     hist.drain(..hist.len() - 1024);
                 }
-                if !visible.load(Ordering::Relaxed) {
+                if !visible.load(Ordering::Relaxed) || crate::audio::ui_busy() {
                     continue;
                 }
                 let f = MicFrame {
