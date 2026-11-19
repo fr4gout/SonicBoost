@@ -1,0 +1,37 @@
+name: Bug report
+description: Something isn't working as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve SonicBoost. Please fill in as much as you can.
+  - type: input
+    id: version
+    attributes:
+      label: SonicBoost version
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 23H2"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: devices
+    attributes:
+      label: Audio devices
+      description: Copy the "From / To / Format" lines from ⚙ Settings.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Screenshots or error messages

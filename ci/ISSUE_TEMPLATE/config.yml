@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Setup help (virtual cable, no sound)
+    url: https://github.com/fr4gout/SonicBoost#-troubleshooting
+    about: Most audio issues are covered in the Troubleshooting section.

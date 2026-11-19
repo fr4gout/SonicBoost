@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SonicBoost</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app" class="compact booting refract">
+  <canvas id="liquidBg" aria-hidden="true"></canvas>
+  <!-- refraction map used by backdrop-filter: url(#liquid) for the liquid-glass bend -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <filter id="liquid" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.006 0.011" numOctaves="2" seed="11" result="noise" />
+      <feGaussianBlur in="noise" stdDeviation="3" result="soft" />
+      <feDisplacementMap in="SourceGraphic" in2="soft" scale="46" xChannelSelector="R" yChannelSelector="G" />
+    </filter>
+  </svg>
+
+  <!-- ─────────────── Title bar ─────────────── -->
+  <header class="titlebar" data-tauri-drag-region>
+    <div class="brand" data-tauri-drag-region>
+      <img src="icon.png" alt="" class="logo" data-tauri-drag-region />
+      <span data-tauri-drag-region>Sonic<b>Boost</b></span>
+    </div>
+    <div id="statusPill" class="status-pill" data-tauri-drag-region><i></i><span>Starting…</span></div>
+    <div class="win-btns">
+      <button id="btnSettings" class="icon-btn" title="Settings">
+        <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+      </button>
+      <button id="btnMode" class="icon-btn" title="Extended view">
+        <svg class="i-expand" viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>
+        <svg class="i-shrink" viewBox="0 0 24 24"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>
+      </button>
+      <button id="btnMin" class="icon-btn" title="Minimize"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+      <button id="btnClose" class="icon-btn close" title="Hide to tray (keeps boosting)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- ─────────────── Now playing ─────────────── -->
+    <section class="panel np-panel" style="--i:0">
+      <div class="np-backdrop"><img id="npBackdrop" alt="" /></div>
+      <div class="np-art-wrap">
+        <div class="vinyl"><i></i></div>
+        <div class="np-art"><img id="npArt" alt="" /><div class="np-art-fallback">♪</div></div>
+        <div class="np-playing-badge"><i></i><i></i><i></i><i></i></div>
+      </div>
+      <div class="np-info">
+        <div class="np-app"><span id="npApp">Nothing playing</span></div>
+        <div class="np-title marquee"><span id="npTitle">Play some music</span></div>
+        <div class="np-artist" id="npArtist">Spotify, YouTube, Media Player…</div>
+        <div class="np-album x-only" id="npAlbum"></div>
+      </div>
+      <div class="np-progress">
+        <div class="np-bar"><i id="npFill"></i><b id="npKnob"></b></div>
+        <div class="np-times"><span id="npPos">0:00</span><span id="npDur">0:00</span></div>
+      </div>
+      <div class="np-controls">
+        <button class="np-btn" data-media="previous" title="Previous"><svg viewBox="0 0 24 24"><path d="M6 5v14M19 6 9 12l10 6V6Z"/></svg></button>
+        <button class="np-btn main" data-media="play_pause" title="Play / Pause">
+          <svg class="i-play" viewBox="0 0 24 24"><path d="M7 5v14l12-7L7 5Z"/></svg>
+          <svg class="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg>
+        </button>
+        <button class="np-btn" data-media="next" title="Next"><svg viewBox="0 0 24 24"><path d="M18 5v14M5 6l10 6-10 6V6Z"/></svg></button>
+      </div>
+    </section>
+
+    <!-- ─────────────── Boost knob ─────────────── -->
+    <section class="panel boost-panel" style="--i:1">
+      <div class="panel-head"><h3>Boost</h3><span class="hint" id="boostDb">+3.5 dB</span></div>
+      <div class="knob-stage">
+        <canvas id="ringCanvas" class="ring-canvas"></canvas>
+        <div id="knob" class="knob"></div>
+      </div>
+      <div class="boost-row">
+        <button id="btnPower" class="power on" title="Turn the boost on/off (bypass)">
+          <svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>
+        </button>
+        <div class="boost-steps">
+          <button data-boost="1">100%</button><button data-boost="2">200%</button>
+          <button data-boost="3">300%</button><button data-boost="5">500%</button>
+        </div>
+        <button id="btnLimiter" class="chip toggle on" title="Prevents distortion at high boost">Limiter</button>
+      </div>
+    </section>
+
+    <!-- ─────────────── Pitch ─────────────── -->
+    <section class="panel pitch-panel" style="--i:2">
+      <div class="panel-head">
+        <h3>Pitch</h3>
+        <button id="pitchReset" class="chip small">Reset</button>
+      </div>
+      <div class="pitch-readout">
+        <div class="pr-main"><small>Semitones</small><span id="pitchSt">0</span></div>
+        <div class="pr-side">
+          <div class="pr-row"><small>Cents</small><b id="pitchCt">0</b></div>
+          <div class="pr-row"><small>Ratio</small><b>×<span id="pitchRatio">1.000</span></b></div>
+          <div class="pr-row"><small>Shift</small><b id="pitchDir">Original</b></div>
+        </div>
+      </div>
+      <div class="pitch-slider" id="pitchSlider">
+        <div class="ps-track"><i class="ps-fill"></i><i class="ps-zero"></i></div>
+        <b class="ps-thumb"></b>
+        <div class="ps-ticks"></div>
+      </div>
+      <div class="pitch-inputs">
+        <button class="step" data-st="-1">−</button>
+        <label class="nf"><span>Semi</span><input id="inSt" type="number" min="-12" max="12" step="1" value="0" /><em>st</em></label>
+        <label class="nf"><span>Fine</span><input id="inCt" type="number" min="-100" max="100" step="5" value="0" /><em>ct</em></label>
+        <button class="step" data-st="1">+</button>
+      </div>
+    </section>
+
+    <!-- ─────────────── Presets ─────────────── -->
+    <section class="panel presets-panel" style="--i:3">
+      <div class="panel-head x-only"><h3>Presets</h3><span class="hint" id="presetName">Flat</span><button id="btnSavePreset" class="chip small">+ Save</button></div>
+      <div class="presets" id="presets"></div>
+    </section>
+
+    <!-- ─────────────── Visualizer ─────────────── -->
+    <section class="panel viz-panel" style="--i:4">
+      <canvas id="vizCanvas"></canvas>
+      <div class="viz-tabs" id="vizTabs">
+        <button data-viz="bars">Bars</button><button data-viz="radial">Radial</button>
+        <button data-viz="wave">Wave</button><button data-viz="galaxy">Galaxy</button>
+      </div>
+      <div class="meters"><i id="meterL"></i><i id="meterR"></i></div>
+    </section>
+
+    <!-- ─────────────── Equalizer ─────────────── -->
+    <section class="panel eq-panel x-only" style="--i:5">
+      <div class="panel-head">
+        <h3>10-Band Equalizer</h3>
+        <span class="hint">drag · scroll · double-click resets</span>
+        <button id="eqReset" class="chip small">Flat</button>
+      </div>
+      <div class="eq" id="eq"><canvas id="eqCurve"></canvas><div class="eq-bands" id="eqBands"></div></div>
+    </section>
+
+    <!-- ─────────────── Settings ─────────────── -->
+    <section class="panel settings-panel" style="--i:6">
+      <div class="panel-head"><h3>Settings</h3><button id="closeSettings" class="chip small c-only">Done</button></div>
+      <div class="settings-body">
+        <div class="field">
+          <label>Capture from (virtual cable)</label>
+          <select id="selInput"></select>
+        </div>
+        <div class="field">
+          <label>Play to (your speakers / headphones)</label>
+          <select id="selOutput"></select>
+        </div>
+        <div class="row-btns">
+          <button id="btnApplyDev" class="btn primary">Apply &amp; restart</button>
+          <button id="btnRefresh" class="btn">Refresh</button>
+          <button id="btnSoundSettings" class="btn">Windows sound</button>
+        </div>
+        <div class="engine-info" id="engineInfo"></div>
+
+        <div class="field">
+          <label>Stereo width <span id="widthVal">100%</span></label>
+          <input type="range" id="rngWidth" min="0" max="2" step="0.05" />
+        </div>
+        <div class="field">
+          <label>Balance <span id="balVal">Centre</span></label>
+          <input type="range" id="rngBalance" min="-1" max="1" step="0.05" />
+        </div>
+
+        <label class="switch"><input type="checkbox" id="tglAutostart" /><span></span>Launch with Windows</label>
+        <label class="switch"><input type="checkbox" id="tglMinimized" /><span></span>Start hidden in tray</label>
+        <label class="switch"><input type="checkbox" id="tglLight" /><span></span>Light theme</label>
+        <label class="switch"><input type="checkbox" id="tglRefract" checked /><span></span>Liquid glass refraction</label>
+
+        <div class="field">
+          <label>Visual intensity <span id="intVal"></span></label>
+          <input type="range" id="rngIntensity" min="0.3" max="2" step="0.05" />
+        </div>
+
+        <div class="hotkeys">
+          <h4>Global hotkeys</h4>
+          <div><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>↑</kbd><kbd>↓</kbd><span>Boost ±10%</span></div>
+          <div><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>B</kbd><span>Boost on / off</span></div>
+          <div><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>P</kbd><span>Play / pause</span></div>
+          <div><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>←</kbd><kbd>→</kbd><span>Previous / next</span></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ─────────────── First-run setup ─────────────── -->
+  <div class="setup" id="setup">
+    <div class="setup-card">
+      <h2>One-time audio setup</h2>
+      <p>To boost <b>all</b> Windows sound, SonicBoost listens to a free virtual cable and plays the boosted sound on your speakers.</p>
+      <ol>
+        <li><b>Install VB-Audio Virtual Cable</b> (free), then restart your PC.
+          <button class="btn" data-link="vbcable">Open download page</button></li>
+        <li>In Windows Sound settings set <b>CABLE Input</b> as the default <b>output</b>.
+          <button class="btn" data-link="sound-settings">Open Sound settings</button></li>
+        <li>In SonicBoost Settings, pick your real speakers as <b>Play to</b>.</li>
+      </ol>
+      <div class="row-btns">
+        <button class="btn primary" id="setupRetry">Check again</button>
+        <button class="btn" id="setupLater">Later</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+</div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "sonicboost",
+  "private": true,
+  "version": "1.0.0",
+  "description": "SonicBoost - Windows sound booster, 10-band EQ, pitch shifter, Now Playing and visualizer",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "icons": "tauri icon app-icon.png",
+    "preview": "npx --yes serve ui -l 1420"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
