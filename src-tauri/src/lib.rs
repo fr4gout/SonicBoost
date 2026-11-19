@@ -138,7 +138,8 @@ impl AppState {
         let mut st = if m.enabled {
             let monitor = if m.monitor_on { Some(m.monitor_device.clone().unwrap_or_else(|| "default".into())) } else { None };
             self.apply_mic();
-            let st = self.mic_engine.lock().unwrap().start(m.input, m.output, monitor, self.forbidden_mic_output());
+            let forbid = self.forbidden_mic_output();
+            let st = self.mic_engine.lock().unwrap().start(m.input, m.output, monitor, forbid);
             st
         } else {
             self.mic.monitor_on.store(false, Ordering::Relaxed);
@@ -342,10 +343,17 @@ struct MicState {
 
 #[tauri::command(async)]
 fn mic_get(state: State<AppState>) -> MicState {
+    // Each lock is taken and released on its own line: a guard created inside
+    // a struct literal lives until the end of the whole expression, and
+    // forbidden_mic_output() locks the settings again (that deadlocked).
+    let mic = state.settings.lock().unwrap().mic.clone();
+    let status = state.mic_status.lock().unwrap().clone();
+    let forbid = state.forbidden_mic_output();
+    let devices = mic::list_devices(forbid.as_deref());
     MicState {
-        settings: state.settings.lock().unwrap().mic.clone(),
-        status: state.mic_status.lock().unwrap().clone(),
-        devices: mic::list_devices(state.forbidden_mic_output().as_deref()),
+        settings: mic,
+        status,
+        devices,
         builtin: settings::builtin_mic_presets(),
         modes: micdsp::VoiceMode::ALL.iter().map(|m| m.code()).collect(),
     }
