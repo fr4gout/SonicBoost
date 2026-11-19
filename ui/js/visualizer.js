@@ -1,9 +1,20 @@
 // Monochrome visualizers: Bars, Radial, Wave, Galaxy + the knob ring.
 const TAU = Math.PI * 2;
 
+let maxDpr = 1.5, glow = true;
+/** Graphics quality: render resolution cap and whether to draw glow blurs. */
+export function setRenderQuality(dprCap, useGlow) { maxDpr = dprCap; glow = useGlow; }
+
+// Canvas CSS sizes are cached by a ResizeObserver: reading
+// getBoundingClientRect() every frame forced a layout 60x per second.
+const sizes = new WeakMap();
+const ro = new ResizeObserver((entries) => {
+  for (const e of entries) sizes.set(e.target, { width: e.contentRect.width, height: e.contentRect.height });
+});
 function fitCanvas(c) {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const r = c.getBoundingClientRect();
+  const dpr = Math.min(window.devicePixelRatio || 1, maxDpr);
+  let r = sizes.get(c);
+  if (!r) { const b = c.getBoundingClientRect(); r = { width: b.width, height: b.height }; sizes.set(c, r); ro.observe(c); }
   const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
   if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
   return { w, h, dpr };
@@ -156,7 +167,7 @@ export class Visualizer {
       }
       g.strokeStyle = `rgba(${ink},${alpha})`;
       g.lineWidth = lw * dpr;
-      g.shadowColor = `rgba(${ink},.8)`; g.shadowBlur = scale === 1 ? 14 * dpr : 0;
+      g.shadowColor = `rgba(${ink},.8)`; g.shadowBlur = glow && scale === 1 ? 14 * dpr : 0;
       g.stroke();
     }
     g.shadowBlur = 0;

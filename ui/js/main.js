@@ -1,11 +1,12 @@
 import { invoke, listen, isTauri } from './bridge.js';
 import { AudioData } from './audio-data.js';
 import { LiquidBackground } from './liquid.js';
-import { Visualizer, KnobRing } from './visualizer.js';
+import { Visualizer, KnobRing, setRenderQuality } from './visualizer.js';
 import { Knob, PitchSlider, Equalizer } from './controls.js';
 import { NowPlaying } from './nowplaying.js';
 import { GlassSelect } from './select.js';
-import { ParametricEditor, parseApo, toApo, SIGNATURE } from './peq.js';
+import { MicView } from './mic.js';
+import { ParametricEditor, parseApo, toApo, SIGNATURE, autoPreamp, profileNameFromFile } from './peq.js';
 
 const $ = (id) => document.getElementById(id);
 const app = $('app');
@@ -64,6 +65,7 @@ audio.onBeat = (p) => viz.burst(p);
 
 // ── boost ────────────────────────────────────────────────────────────
 function showBoost(v) {
+  typeof showWinVol === 'function' && requestAnimationFrame(showWinVol);
   const db = v <= 0 ? '−∞ dB' : `${v >= 1 ? '+' : ''}${(20 * Math.log10(v)).toFixed(1)} dB`;
   $('boostDb').textContent = db;
   document.querySelectorAll('[data-boost]').forEach((b) => b.classList.toggle('active', Math.abs(+b.dataset.boost - v) < 0.01));
@@ -245,6 +247,7 @@ const peqEd = new ParametricEditor({
 });
 $('peqOn').addEventListener('change', (e) => { peqEd.setEnabled(e.target.checked); toast(e.target.checked ? 'Parametric EQ on' : 'Parametric EQ off'); });
 $('peqAdd').addEventListener('click', () => { if (!peqEd.add()) toast('Up to 20 filters'); });
+$('peqAuto').addEventListener('click', () => { const v = peqEd.autoPreamp(); toast(`Preamp ${v.toFixed(1)} dB: just enough headroom`); });
 $('peqExport').addEventListener('click', async () => {
   const text = toApo(peqEd.peq);
   try { await navigator.clipboard.writeText(text); toast('Copied as Equalizer APO config'); }
@@ -260,8 +263,14 @@ $('apoApply').addEventListener('click', () => {
     const r = parseApo($('apoText').value);
     peqEd.load(r); peqEd.emit();
     $('peqOn').checked = true;
+    if (r.graphic) applyPreset('Custom', r.graphic);
+    if (r.ambience) setAmbience(r.ambience, true);
     $('apoModal').classList.remove('show');
-    toast(`Imported preamp ${r.preamp.toFixed(1)} dB + ${r.filters.length} filters${r.skipped ? ` (${r.skipped} skipped)` : ''}`);
+    const parts = [`preamp ${r.preamp.toFixed(1)} dB`, `${r.filters.length} filters`];
+    if (r.graphic) parts.push('GraphicEQ → 10-band');
+    if (r.ambience) parts.push('Ambience on');
+    toast(`Imported ${parts.join(' · ')}`);
+    if (r.warnings.length) showNotice({ key: 'import', prio: 2, title: 'Imported with notes', text: r.warnings.join(' '), action: 'OK', onAction: () => hideNotice('import') });
   } catch (err) { $('apoErr').textContent = err.message; }
 });
 
@@ -317,6 +326,32 @@ async function saveProfile() {
   catch (err) { toast(String(err)); }
 }
 $('profileSave').addEventListener('click', saveProfile);
+$('profileImport').addEventListener('click', () => $('profileImportInput').click());
+$('profileImportInput').addEventListener('change', async (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  if (!files.length) return;
+  const list = [], notes = [];
+  for (const f of files) {
+    const name = profileNameFromFile(f.name);
+    try {
+      const r = parseApo(await f.text());
+      list.push({
+        name, boost: S.boost, eq: r.graphic || Array(10).fill(0), preset: r.graphic ? 'Custom' : 'Flat',
+        peq: { enabled: true, preamp: r.preamp, filters: r.filters },
+        ambience: r.ambience || { enabled: false, mix: 0.45, size: 1 },
+        pitch_semitones: 0, pitch_cents: 0, width: 1, balance: 0, limiter: true,
+      });
+      r.warnings.forEach((w) => notes.push(`${name}: ${w}`));
+    } catch (err) { notes.push(`${name}: ${err.message}`); }
+  }
+  if (list.length) {
+    try { profiles = await invoke('import_profiles', { profiles: list }); renderProfiles(); }
+    catch (err) { toast(String(err)); return; }
+  }
+  toast(`Imported ${list.length} of ${files.length} file${files.length > 1 ? 's' : ''} as profiles`);
+  if (notes.length) showNotice({ key: 'import', prio: 2, title: 'Imported with notes', text: notes.join('  ·  '), action: 'OK', onAction: () => hideNotice('import') });
+});
 $('profileNew').addEventListener('keydown', (e) => { if (e.key === 'Enter') saveProfile(); if (e.key === 'Escape') closeProfiles(); });
 
 // ── now playing ──────────────────────────────────────────────────────
@@ -339,6 +374,23 @@ async function setMode(mode, user = true) {
   requestAnimationFrame(() => { app.classList.remove('morphing'); eq.dirty = true; });
 }
 $('btnMode').addEventListener('click', () => setMode(S.mode === 'compact' ? 'extended' : 'compact'));
+// ── mic view ─────────────────────────────────────────────────────────
+const mic = new MicView({ app, toast });
+function setMicView(on, user = true) {
+  if (user) {
+    app.classList.add('morphing');
+    setTimeout(() => { apply(); requestAnimationFrame(() => app.classList.remove('morphing')); }, 200);
+  } else apply();
+  function apply() {
+    app.classList.toggle('mic', on);
+    app.classList.remove('sheet'); $('btnSettings').classList.remove('active');
+    $('btnMicView').title = on ? 'Back to the sound booster' : 'Mic: voice processing, voice modes, soundboard';
+    mic.setVisible(on);
+    if (!on) eq.dirty = true;
+  }
+  try { localStorage.setItem('micView', on ? '1' : ''); } catch {}
+}
+$('btnMicView').addEventListener('click', () => setMicView(!app.classList.contains('mic')));
 $('btnSettings').addEventListener('click', () => {
   if (S.mode === 'compact') app.classList.toggle('sheet');
   else document.querySelector('.settings-panel').animate([{ transform: 'scale(1)' }, { transform: 'scale(1.02)' }, { transform: 'scale(1)' }], { duration: 450, easing: 'cubic-bezier(.34,1.56,.64,1)' });
@@ -434,23 +486,79 @@ $('tglAutostart').addEventListener('change', async (e) => {
 });
 $('tglMinimized').addEventListener('change', (e) => { S.start_minimized = e.target.checked; invoke('set_start_minimized', { enabled: e.target.checked }); });
 
+const darkMq = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
 function applyTheme(theme) {
-  const light = theme === 'light';
+  // auto follows Windows light/dark; glass is a see-through dark window
+  const light = theme === 'light' || (theme === 'auto' && darkMq && !darkMq.matches);
   app.classList.toggle('light', light);
+  app.classList.toggle('glass', theme === 'glass');
+  document.querySelectorAll('[data-theme]').forEach((b) => b.classList.toggle('active', b.dataset.theme === theme));
   liquid.light = light;
   const ink = light ? '0,0,0' : '255,255,255';
   viz.ink = ring.ink = eq.ink = peqEd.ink = ink; viz.bg = light ? '217,217,217' : '4,4,4';
   peqEd.draw();
   eq.dirty = true;
 }
-$('tglLight').addEventListener('change', (e) => { S.theme = e.target.checked ? 'light' : 'dark'; applyTheme(S.theme); invoke('set_ui', { theme: S.theme }); save(); });
+document.querySelectorAll('[data-theme]').forEach((b) => b.addEventListener('click', () => {
+  S.theme = b.dataset.theme; applyTheme(S.theme);
+  invoke('set_window_effect', { theme: S.theme }).catch(() => {});
+  invoke('set_ui', { theme: S.theme }); save();
+  toast({ dark: 'Dark theme', light: 'Light theme', auto: 'Theme follows Windows', glass: 'Glass: see-through window' }[S.theme]);
+}));
+darkMq && darkMq.addEventListener('change', () => { if (S && S.theme === 'auto') applyTheme('auto'); });
 
-const refractSaved = (() => { try { return localStorage.getItem('refract'); } catch { return null; } })();
-$('tglRefract').checked = refractSaved !== '0';
-app.classList.toggle('refract', $('tglRefract').checked);
-$('tglRefract').addEventListener('change', (e) => {
-  app.classList.toggle('refract', e.target.checked);
-  try { localStorage.setItem('refract', e.target.checked ? '1' : '0'); } catch {}
+// Graphics quality. The biggest cost is the moving light field behind the
+// frosted panels: every redraw makes each blurred panel re-blur. So
+// "balanced" redraws it at 15 fps (it moves slowly, the eye can't tell).
+const QUALITY = {
+  low: { bgFps: 0, vizDpr: 1, glow: false, refract: false, fpsCap: 30 },
+  balanced: { bgFps: 15, vizDpr: 1.5, glow: true, refract: false, fpsCap: 60 },
+  high: { bgFps: 60, vizDpr: 2, glow: true, refract: true, fpsCap: 144 },
+};
+let Q = QUALITY.balanced;
+function applyQuality(q) {
+  Q = QUALITY[q] || QUALITY.balanced;
+  ['low', 'balanced', 'high'].forEach((k) => app.classList.toggle('q-' + k, k === q));
+  app.classList.toggle('refract', Q.refract);
+  setRenderQuality(Q.vizDpr, Q.glow);
+  document.querySelectorAll('[data-quality]').forEach((b) => b.classList.toggle('active', b.dataset.quality === q));
+  liquid.draw(0.016); // keep a still frame in Fast mode
+}
+document.querySelectorAll('[data-quality]').forEach((b) => b.addEventListener('click', () => {
+  S.quality = b.dataset.quality; applyQuality(S.quality); invoke('set_ui', { quality: S.quality }); save();
+}));
+window.__setQuality = applyQuality;
+
+// ── ambience (echo & room) ───────────────────────────────────────────
+function showAmbience() {
+  const a = S.ambience || { enabled: false, mix: 0.45, size: 1 };
+  $('tglAmb').checked = !!a.enabled;
+  $('rngAmbMix').value = a.mix; $('rngAmbSize').value = a.size;
+  rangeFill($('rngAmbMix')); rangeFill($('rngAmbSize'));
+  $('ambMixVal').textContent = `${Math.round(a.mix * 100)}%`;
+  $('ambSizeVal').textContent = a.size < 0.8 ? 'Small' : a.size > 1.4 ? 'Hall' : 'Room';
+}
+function setAmbience(a, send = true) {
+  S.ambience = { enabled: !!a.enabled, mix: +a.mix, size: +a.size };
+  showAmbience();
+  if (send) { invoke('set_ambience', { ambience: S.ambience }); markCustom(); save(); }
+}
+$('tglAmb').addEventListener('change', (e) => setAmbience({ ...S.ambience, enabled: e.target.checked }));
+$('rngAmbMix').addEventListener('input', (e) => setAmbience({ ...S.ambience, mix: +e.target.value, enabled: true }));
+$('rngAmbSize').addEventListener('input', (e) => setAmbience({ ...S.ambience, size: +e.target.value, enabled: true }));
+
+// ── Windows volume slider (applied by SonicBoost while output is the cable)
+let winVol = { percent: 100, muted: false, active: false };
+function showWinVol() {
+  const el = $('winVol');
+  if (!winVol.active) { el.textContent = ''; return; }
+  const out = Math.round(((S ? S.boost : 1) * winVol.percent));
+  el.textContent = winVol.muted ? 'Windows muted' : `Windows ${winVol.percent}% · Output ${out}%`;
+  el.classList.toggle('muted', winVol.muted);
+}
+$('tglFollowVol').addEventListener('change', (e) => {
+  invoke('set_follow_volume', { enabled: e.target.checked });
+  toast(e.target.checked ? 'Windows volume slider controls SonicBoost' : 'Windows volume slider ignored');
 });
 
 // ── status ───────────────────────────────────────────────────────────
@@ -553,34 +661,61 @@ $('btnCheckUpdate').addEventListener('click', () => checkForUpdates(true));
 $('tglAutoUpdate').addEventListener('change', (e) => { S.auto_update = e.target.checked; invoke('set_auto_update', { enabled: e.target.checked }); });
 
 // ── cursor-following specular light on the glass ─────────────────────
-let mouse = null;
+// Only the panel under the cursor is updated (reading every panel's rect each
+// frame forced a full layout).
+let mouse = null, sheenPanel = null;
 app.addEventListener('pointermove', (e) => { mouse = e; });
 function updateSheen() {
   if (!mouse) return;
-  for (const p of document.querySelectorAll('.panel')) {
+  const p = mouse.target.closest && mouse.target.closest('.panel');
+  if (p) {
     const r = p.getBoundingClientRect();
     p.style.setProperty('--mx', `${mouse.clientX - r.left}px`);
     p.style.setProperty('--my', `${mouse.clientY - r.top}px`);
   }
+  sheenPanel = p;
   mouse = null;
 }
 
+// cached sizes (no layout reads inside the animation loop)
+let knobRadius = 76;
+new ResizeObserver(() => { knobRadius = $('knob').getBoundingClientRect().width / 2; }).observe($('knob'));
+const energyEls = [document.querySelector('.logo'), null];
+let lastEnergy = -1, energyT = 0, bgT = 0;
+
 // ── render loop ──────────────────────────────────────────────────────
 let last = performance.now(), running = true;
+let frameAcc = 0;
 function loop(now) {
   if (!running) return;
-  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  requestAnimationFrame(loop);
+  const raw = (now - last) / 1000;
+  // frame cap (Fast: 30 fps; unfocused window: 30 fps)
+  const cap = document.hasFocus() ? Q.fpsCap : Math.min(30, Q.fpsCap);
+  frameAcc += raw; last = now;
+  if (frameAcc < 1 / cap - 0.002) return;
+  const dt = Math.min(0.05, frameAcc); frameAcc = 0;
   audio.update(dt);
-  app.style.setProperty('--energy', (S && S.bypass ? audio.energy * 0.4 : audio.energy).toFixed(3));
-  liquid.draw(dt);
+  // the glow variable only feeds the logo and the knob: set it on them (not
+  // on #app, which restyled the whole page every frame), at most 30x/s
+  energyT += dt;
+  if (energyT > 1 / 30) {
+    energyT = 0;
+    const e = Math.round((S && S.bypass ? audio.energy * 0.4 : audio.energy) * 100) / 100;
+    if (e !== lastEnergy) {
+      lastEnergy = e;
+      energyEls[1] ||= document.querySelector('.knob .orb');
+      for (const el of energyEls) el && el.style.setProperty('--energy', e);
+    }
+  }
+  if (Q.bgFps) { bgT += dt; if (bgT >= 1 / Q.bgFps) { liquid.draw(bgT); bgT = 0; } }
   viz.draw(dt);
-  const kr = $('knob').getBoundingClientRect().width / 2;
-  ring.draw(dt, kr, !(S && S.bypass));
+  ring.draw(dt, knobRadius, !(S && S.bypass));
   knob.tick(dt); pitch.tick(dt); eq.tick(dt); np.tick(dt);
+  if (app.classList.contains('mic')) mic.tick();
   $('meterL').style.setProperty('--v', Math.min(1, audio.peakL).toFixed(3));
   $('meterR').style.setProperty('--v', Math.min(1, audio.peakR).toFixed(3));
   updateSheen();
-  requestAnimationFrame(loop);
 }
 document.addEventListener('visibilitychange', () => {
   const vis = !document.hidden;
@@ -602,6 +737,7 @@ function applySound() {
   $('rngWidth').value = S.width ?? 1; $('rngBalance').value = S.balance ?? 0;
   ['rngWidth', 'rngBalance'].forEach((id) => rangeFill($(id)));
   showStereo();
+  showAmbience();
   profiles = { profiles: (S.profiles || []).map((p) => p.name), active: S.active_profile || '' };
   renderProfiles();
 }
@@ -611,7 +747,9 @@ async function boot() {
   S = st.settings;
   S.custom_presets ||= [];
   applyTheme(S.theme);
-  $('tglLight').checked = S.theme === 'light';
+  applyQuality(S.quality || 'balanced');
+  if (S.theme === 'glass') invoke('set_window_effect', { theme: 'glass' }).catch(() => {});
+  $('tglFollowVol').checked = S.follow_windows_volume !== false;
   await setMode(S.mode, false);
   applySound();
   setBypass(S.bypass, false);
@@ -632,6 +770,7 @@ async function boot() {
   invoke('media_control', { action: 'refresh' }).catch(() => {});
   listen('engine-status', (s) => { setStatus(s); toast(s.running ? 'Audio device changed — reconnected' : 'Audio device lost'); });
   listen('bypass-changed', (on) => setBypass(on, false));
+  listen('windows-volume', (v) => { winVol = v; showWinVol(); });
   listen('state-reload', async (name) => {
     const st2 = await invoke('get_state');
     S = st2.settings; applySound();
@@ -644,6 +783,9 @@ async function boot() {
     $('noticeText').textContent = p.total ? `${fmtMB(p.done)} of ${fmtMB(p.total)} · ${pct}%` : fmtMB(p.done);
   });
 
+  mic.listen();
+  mic.load();
+  setMicView((() => { try { return localStorage.getItem('micView') === '1'; } catch { return false; } })() || /mic/.test(location.search), false);
   checkRouting();
   setInterval(checkRouting, 5000);
   setInterval(checkSilence, 1000);

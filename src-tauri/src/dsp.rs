@@ -19,6 +19,10 @@ pub struct DspParams {
     pub eq_db: [f32; EQ_BANDS],  // per band gain in dB
     pub pitch_st: f32,           // semitones (+ cents / 100)
     pub width: f32,              // stereo width, 1.0 = normal, 0 = mono, 2 = extra wide
+    pub master: f32,             // Windows volume slider (linear), applied last
+    pub amb_on: bool,            // ambience (echo / room)
+    pub amb_mix: f32,
+    pub amb_size: f32,
     pub balance: f32,            // -1 = left .. 0 = centre .. +1 = right
     pub bypass: bool,
     pub limiter: bool,
@@ -31,6 +35,10 @@ impl Default for DspParams {
             eq_db: [0.0; EQ_BANDS],
             pitch_st: 0.0,
             width: 1.0,
+            master: 1.0,
+            amb_on: false,
+            amb_mix: 0.5,
+            amb_size: 1.0,
             balance: 0.0,
             bypass: false,
             limiter: true,
@@ -436,6 +444,87 @@ impl ParametricEq {
     }
 }
 
+// -------------------------------------------------------------- ambience --
+
+/// "Ambience": a ping-pong multi-tap echo with softened taps, the same
+/// structure as the popular Equalizer APO reverb/echo scripts (Copy/Delay
+/// chains): a short early reflection, then echoes at doubling delays that
+/// alternate between left and right and fade by ~3 dB per step.
+pub struct Ambience {
+    buf: Vec<[f32; 2]>,
+    mask: usize,
+    w: usize,
+    fs: f32,
+    taps: [(f32, f32, bool); 5], // (delay ms, gain, crossfeed)
+    delays: [usize; 5],
+    lp: [[f32; 2]; 5],
+    lp_k: f32,
+    mix: f32,
+    mix_target: f32,
+    size: f32,
+    enabled: bool,
+}
+
+impl Ambience {
+    pub fn new(fs: f32) -> Self {
+        let len = ((fs * 1.4) as usize).next_power_of_two(); // up to ~640 ms at size 2
+        let mut a = Self {
+            buf: vec![[0.0; 2]; len],
+            mask: len - 1,
+            w: 0,
+            fs,
+            // early reflection -6 dB, then echoes -5/-8/-11/-14 dB (APO script: -9..-18 dB taps + 4 dB echo bus)
+            taps: [(20.0, 0.50, true), (40.0, 0.56, false), (80.0, 0.40, true), (160.0, 0.28, false), (320.0, 0.20, true)],
+            delays: [0; 5],
+            lp: [[0.0; 2]; 5],
+            lp_k: 1.0 - (-2.0 * PI * 4500.0 / fs).exp(),
+            mix: 0.0,
+            mix_target: 0.0,
+            size: 1.0,
+            enabled: false,
+        };
+        a.set(false, 0.0, 1.0);
+        a
+    }
+
+    /// `mix` 0..1 (wet level), `size` 0.5..2 (scales all delay times).
+    pub fn set(&mut self, enabled: bool, mix: f32, size: f32) {
+        if enabled && !self.enabled {
+            for v in self.buf.iter_mut() {
+                *v = [0.0; 2];
+            }
+            self.lp = [[0.0; 2]; 5];
+        }
+        self.enabled = enabled;
+        self.mix_target = if enabled { mix.clamp(0.0, 1.0) } else { 0.0 };
+        self.size = size.clamp(0.5, 2.0);
+        for (i, t) in self.taps.iter().enumerate() {
+            self.delays[i] = ((t.0 * self.size * self.fs / 1000.0) as usize).clamp(1, self.mask);
+        }
+    }
+
+    #[inline]
+    pub fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        self.mix += (self.mix_target - self.mix) * 0.0008;
+        if !self.enabled && self.mix < 1e-4 {
+            return (l, r);
+        }
+        self.buf[self.w] = [l, r];
+        let (mut wl, mut wr) = (0.0, 0.0);
+        for i in 0..5 {
+            let [a, b] = self.buf[(self.w.wrapping_sub(self.delays[i])) & self.mask];
+            let (x, y) = if self.taps[i].2 { (b, a) } else { (a, b) };
+            let s = &mut self.lp[i];
+            s[0] += (x - s[0]) * self.lp_k;
+            s[1] += (y - s[1]) * self.lp_k;
+            wl += s[0] * self.taps[i].1;
+            wr += s[1] * self.taps[i].1;
+        }
+        self.w = (self.w + 1) & self.mask;
+        (l + wl * self.mix, r + wr * self.mix)
+    }
+}
+
 // ---------------------------------------------------------- pitch shift --
 
 /// Low-latency pitch shifter: two crossfaded read taps sweeping through a
@@ -622,12 +711,14 @@ pub struct Processor {
     params: DspParams,
     eq: Equalizer,
     peq: ParametricEq,
+    ambience: Ambience,
     pitch: [PitchShifter; 2],
     ratio: f32,
     ratio_target: f32,
     limiter: Limiter,
     comp: Compressor,
     gain: f32, // smoothed boost
+    master: f32,
     width: f32,
     bal: (f32, f32),
     smooth: f32,
@@ -640,12 +731,14 @@ impl Processor {
             params: DspParams::default(),
             eq: Equalizer::new(fs),
             peq: ParametricEq::new(fs),
+            ambience: Ambience::new(fs),
             pitch: [PitchShifter::new(fs), PitchShifter::new(fs)],
             ratio: 1.0,
             ratio_target: 1.0,
             limiter: Limiter::new(fs),
             comp: Compressor::new(fs),
             gain: 1.0,
+            master: 1.0,
             width: 1.0,
             bal: (1.0, 1.0),
             smooth: 1.0 - (-1.0 / (fs * 0.03)).exp(), // ~30 ms glide
@@ -661,8 +754,13 @@ impl Processor {
         self.peq.set(enabled, preamp_db, bands);
     }
 
+    pub fn set_ambience(&mut self, enabled: bool, mix: f32, size: f32) {
+        self.ambience.set(enabled, mix, size);
+    }
+
     pub fn set_params(&mut self, p: DspParams) {
         self.eq.set_target(&p.eq_db);
+        self.ambience.set(p.amb_on, p.amb_mix, p.amb_size);
         let st = p.pitch_st.clamp(-PITCH_RANGE_ST, PITCH_RANGE_ST);
         self.ratio_target = 2f32.powf(st / 12.0);
         if st.abs() < 1e-3 {
@@ -679,6 +777,19 @@ impl Processor {
 
     #[inline]
     pub fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        // The Windows volume slider works together with the booster:
+        // output = (boosted sound) × Windows volume. It's the very last stage,
+        // so the slider and volume keys scale the result exactly like Windows'
+        // own volume would (and mute is true silence), boosted or bypassed.
+        let k = self.smooth;
+        Self::glide(&mut self.master, self.params.master.clamp(0.0, 1.0), k);
+        let m = self.master;
+        let (l, r) = if self.params.bypass { (l, r) } else { self.process_fx(l, r) };
+        (l * m, r * m)
+    }
+
+    #[inline]
+    fn process_fx(&mut self, l: f32, r: f32) -> (f32, f32) {
         if self.params.bypass {
             return (l, r);
         }
@@ -698,6 +809,11 @@ impl Processor {
         self.eq.tick();
         l = self.eq.process(0, l);
         r = self.eq.process(1, r);
+
+        // ambience (echo / room) before the stereo image and boost
+        let (al, ar) = self.ambience.process(l, r);
+        l = al;
+        r = ar;
 
         // stereo width (mid/side) and balance
         Self::glide(&mut self.width, self.params.width.clamp(0.0, 2.0), k);
@@ -1046,6 +1162,69 @@ mod tests {
         assert!(mx < 3.0);
         assert_eq!(peq.slots[1].cur_f, 5000.0);
         assert_eq!(peq.slots[1].cur_g, 12.0);
+    }
+
+    #[test]
+    fn ambience_echoes_ping_pong() {
+        let mut a = Ambience::new(FS);
+        a.set(true, 1.0, 1.0);
+        for _ in 0..48_000 {
+            a.process(0.0, 0.0); // let the mix glide to 1
+        }
+        // impulse on the left only
+        let mut out = vec![];
+        out.push(a.process(1.0, 0.0));
+        for _ in 1..20_000 {
+            out.push(a.process(0.0, 0.0));
+        }
+        let at = |ms: f32| (ms * FS / 1000.0) as usize;
+        let win = |i: usize, ch: usize| out[i..i + 400].iter().map(|v| if ch == 0 { v.0.abs() } else { v.1.abs() }).fold(0f32, f32::max);
+        assert!(win(at(20.0), 1) > 0.02 && win(at(20.0), 0) < 1e-3, "20 ms tap crosses to the right");
+        assert!(win(at(40.0), 0) > 0.02, "40 ms tap returns on the left");
+        assert!(win(at(80.0), 1) > 0.01, "80 ms tap on the right");
+        assert!(out.iter().all(|v| v.0.is_finite() && v.1.is_finite()));
+    }
+
+    #[test]
+    fn ambience_off_is_transparent() {
+        let mut a = Ambience::new(FS);
+        a.set(false, 0.8, 1.0);
+        assert_eq!(a.process(0.3, -0.4), (0.3, -0.4));
+    }
+
+    #[test]
+    fn windows_volume_is_applied_last_and_glides() {
+        let mut p = Processor::new(FS);
+        p.set_params(DspParams { master: 0.25, bypass: true, ..Default::default() });
+        let mut out = (0.0, 0.0);
+        for _ in 0..48_000 {
+            out = p.process(0.8, 0.8);
+        }
+        assert!((out.0 - 0.2).abs() < 1e-3, "{out:?}");
+        p.set_params(DspParams { master: 0.0, bypass: true, ..Default::default() });
+        let first = p.process(0.8, 0.8).0;
+        assert!(first > 0.1, "must glide, not jump: {first}");
+        for _ in 0..48_000 {
+            out = p.process(0.8, 0.8);
+        }
+        assert!(out.0.abs() < 1e-4, "muted: {out:?}");
+    }
+
+    #[test]
+    fn windows_volume_and_boost_multiply() {
+        // Windows 100 % × boost 500 % = 5x on quiet audio
+        let x: Vec<f32> = sine(500.0, 48_000).iter().map(|v| v * 0.08).collect();
+        let level = |master: f32, boost: f32| {
+            let mut p = Processor::new(FS);
+            p.set_params(DspParams { boost, master, ..Default::default() });
+            let y: Vec<f32> = x.iter().map(|&s| p.process(s, s).0).collect();
+            rms(&y[9_600..]) / rms(&x[9_600..])
+        };
+        let full = level(1.0, 5.0);
+        let half = level(0.5, 5.0);
+        assert!(full > 4.8, "100 % × 500 % gave {full}");
+        assert!((half / full - 0.5).abs() < 0.01, "slider must scale the boosted level exactly: {half} vs {full}");
+        assert!((level(0.4, 1.0) - 0.4).abs() < 0.02, "no boost: slider alone");
     }
 
     #[test]

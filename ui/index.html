@@ -25,6 +25,9 @@
       <span data-tauri-drag-region>Sonic<b>Boost</b></span>
     </div>
     <div id="statusPill" class="status-pill" data-tauri-drag-region><i></i><span>Starting…</span></div>
+    <button id="btnMicView" class="icon-btn mic-view-btn" title="Mic: voice processing, voice modes, soundboard">
+      <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+    </button>
     <button id="btnProfiles" class="profile-btn" title="Sound profiles (Ctrl+Alt+1–9)">
       <svg viewBox="0 0 24 24"><path d="M12 3 3 7.5l9 4.5 9-4.5L12 3Z"/><path d="m3 12 9 4.5 9-4.5"/><path d="m3 16.5 9 4.5 9-4.5"/></svg>
       <span id="profileName">Profiles</span>
@@ -88,7 +91,7 @@
 
     <!-- ─────────────── Boost knob ─────────────── -->
     <section class="panel boost-panel" style="--i:1">
-      <div class="panel-head"><h3>Boost</h3><span class="hint" id="boostDb">+3.5 dB</span></div>
+      <div class="panel-head"><h3>Boost</h3><span class="hint win-vol" id="winVol" title="Windows volume × boost = what you hear"></span><span class="hint" id="boostDb">+3.5 dB</span></div>
       <div class="knob-stage">
         <canvas id="ringCanvas" class="ring-canvas"></canvas>
         <div id="knob" class="knob"></div>
@@ -175,6 +178,7 @@
           <span class="pp-label">Preamp</span>
           <input type="range" id="peqPre" min="-20" max="10" step="0.1" />
           <label class="nf"><input type="number" id="peqPreVal" min="-30" max="30" step="0.1" /><em>dB</em></label>
+          <button class="chip small" id="peqAuto" title="Just enough headroom for the curve's biggest boost">Auto</button>
         </div>
         <div class="peq-head"><span>#</span><span></span><span>Type</span><span>Frequency</span><span>Gain</span><span>Q</span><span></span></div>
         <div class="peq-list" id="peqList"></div>
@@ -211,8 +215,31 @@
 
         <label class="switch"><input type="checkbox" id="tglAutostart" /><span></span>Launch with Windows</label>
         <label class="switch"><input type="checkbox" id="tglMinimized" /><span></span>Start hidden in tray</label>
-        <label class="switch"><input type="checkbox" id="tglLight" /><span></span>Light theme</label>
-        <label class="switch"><input type="checkbox" id="tglRefract" checked /><span></span>Liquid glass refraction</label>
+        <label class="switch"><input type="checkbox" id="tglFollowVol" checked /><span></span>Use the Windows volume slider</label>
+
+        <div class="field">
+          <label>Theme</label>
+          <div class="seg wide" id="themeSeg">
+            <button data-theme="dark">Dark</button><button data-theme="light">Light</button>
+            <button data-theme="auto" title="Follows Windows light / dark mode">Auto</button>
+            <button data-theme="glass" title="See-through window: your desktop shows blurred behind it">Glass</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>Graphics</label>
+          <div class="seg wide" id="qualitySeg">
+            <button data-quality="low" title="Fastest: no blur effects, calmer animation">Fast</button>
+            <button data-quality="balanced" title="Recommended">Balanced</button>
+            <button data-quality="high" title="Liquid refraction and full-rate effects">Ultra</button>
+          </div>
+        </div>
+
+        <div class="effects">
+          <h4>Ambience · echo &amp; room</h4>
+          <label class="switch"><input type="checkbox" id="tglAmb" /><span></span>Ambience</label>
+          <div class="field"><label>Amount <span id="ambMixVal"></span></label><input type="range" id="rngAmbMix" min="0" max="1" step="0.01" /></div>
+          <div class="field"><label>Room size <span id="ambSizeVal"></span></label><input type="range" id="rngAmbSize" min="0.5" max="2" step="0.05" /></div>
+        </div>
 
         <div class="field">
           <label>Visual intensity <span id="intVal"></span></label>
@@ -234,6 +261,78 @@
           <div><kbd>Ctrl</kbd><kbd>Alt</kbd><kbd>←</kbd><kbd>→</kbd><span>Previous / next</span></div>
         </div>
       </div>
+    </section>
+
+    <!-- ═══════════════ MIC VIEW ═══════════════ -->
+    <section class="panel mic-modes-panel m-only" style="--i:0">
+      <div class="panel-head"><h3>Mic presets</h3><span class="hint" id="micPresetName"></span><input class="mic-preset-input" id="micPresetInput" maxlength="32" placeholder="Preset name" /><button class="chip small" id="micPresetSave">+ Save</button></div>
+      <div class="presets mic-presets" id="micPresets"></div>
+      <div class="panel-head sub"><h3>Voice mode</h3><span class="hint">Ctrl+Shift+1–9</span></div>
+      <div class="modes" id="micModes"></div>
+      <div class="custom-voice" id="customVoice">
+        <div class="field"><label>Custom pitch <span id="cvPitchVal"></span></label><input type="range" id="cvPitch" min="-12" max="12" step="0.5" /></div>
+        <div class="field"><label>Custom room <span id="cvRoomVal"></span></label><input type="range" id="cvRoom" min="0" max="1" step="0.01" /></div>
+      </div>
+    </section>
+
+    <section class="panel mic-meter-panel m-only" style="--i:1">
+      <canvas id="micWave"></canvas>
+      <div class="mic-top">
+        <button class="power" id="micPower" title="Mic processing on / off"><svg viewBox="0 0 24 24"><path d="M12 3v9"/><path d="M6.3 6.3a8 8 0 1 0 11.4 0"/></svg></button>
+        <div class="mic-state"><b id="micStateTitle">Mic off</b><span id="micStateText">Turn on to process your voice</span></div>
+        <button class="mute-btn" id="micMute" title="Mute (Ctrl+Alt+M)">
+          <svg class="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+          <svg class="i-mic-off" viewBox="0 0 24 24"><path d="M15 9.3V6a3 3 0 0 0-5.7-1.3M9 9v2a3 3 0 0 0 4.6 2.5M5 11a7 7 0 0 0 11.3 5.5M19 11a7 7 0 0 1-.6 2.8M12 18v3M3 3l18 18"/></svg>
+        </button>
+      </div>
+      <div class="mic-meters">
+        <div class="mm"><span>Input</span><i id="mmIn"></i></div>
+        <div class="mm"><span>Output</span><i id="mmOut"></i></div>
+        <div class="mm"><span>Reduction</span><i id="mmGr" class="gr"></i></div>
+        <div class="lights"><span class="mlight" id="lGate">Gate</span><span class="mlight" id="lVoice">Voice</span><span class="mlight" id="lPtt">PTT</span></div>
+      </div>
+    </section>
+
+    <section class="panel mic-chain-panel m-only" style="--i:2">
+      <div class="panel-head"><h3>Voice chain</h3><span class="hint">every stage is optional</span></div>
+      <div class="chain" id="micChain">
+        <div class="stage" data-st="ns"><label class="switch"><input type="checkbox" data-k="ns" /><span></span>Noise suppression</label><em>AI denoiser: fans, keys, traffic</em></div>
+        <div class="stage"><div class="st-row"><b>Mic boost</b><span data-v="boost_db"></span></div><input type="range" data-k="boost_db" min="0" max="24" step="0.5" /></div>
+        <div class="stage"><label class="switch"><input type="checkbox" data-k="gate_on" /><span></span>Noise gate</label>
+          <div class="st-row"><span class="sub">Threshold</span><span data-v="gate_db"></span></div>
+          <div class="gate-track"><input type="range" data-k="gate_db" min="-80" max="-10" step="1" /><i id="gateLevel"></i></div></div>
+        <div class="stage"><div class="st-row"><b>Voice EQ</b></div>
+          <div class="seg wide eqp" id="micEq"><button data-eq="0">Off</button><button data-eq="1">Clean</button><button data-eq="2">Broadcast</button><button data-eq="3">Clarity</button><button data-eq="4">Bass</button><button data-eq="5">Warm</button></div></div>
+        <div class="stage"><label class="switch"><input type="checkbox" data-k="comp_on" /><span></span>Compressor</label>
+          <div class="st-row"><span class="sub">Amount</span><span data-v="comp_amount"></span></div><input type="range" data-k="comp_amount" min="0" max="1" step="0.01" /></div>
+        <div class="stage"><label class="switch"><input type="checkbox" data-k="deess_on" /><span></span>De-esser</label>
+          <div class="st-row"><span class="sub">Amount</span><span data-v="deess_amount"></span></div><input type="range" data-k="deess_amount" min="0" max="1" step="0.01" /></div>
+        <div class="stage"><label class="switch"><input type="checkbox" data-k="limiter_on" /><span></span>Limiter</label><em>never clips, even when you shout</em></div>
+        <div class="stage"><div class="st-row"><b>Output level</b><span data-v="out_db"></span></div><input type="range" data-k="out_db" min="-24" max="12" step="0.5" /></div>
+      </div>
+    </section>
+
+    <section class="panel mic-io-panel m-only" style="--i:3">
+      <div class="panel-head"><h3>Devices &amp; control</h3></div>
+      <div class="settings-body">
+        <div class="field"><label>Microphone</label><select id="micIn"></select></div>
+        <div class="field"><label>Send processed voice to (virtual cable)</label><select id="micOut"></select></div>
+        <div class="tip" id="micTip"></div>
+        <label class="switch"><input type="checkbox" id="micMon" /><span></span>Monitor: hear yourself</label>
+        <div class="field mon-only"><label>Monitor device</label><select id="micMonDev"></select></div>
+        <div class="field mon-only"><label>Monitor volume <span id="micMonVolVal"></span></label><input type="range" id="micMonVol" min="0" max="1.5" step="0.01" /></div>
+        <div class="field"><label>Push-to-talk <span class="sub">hold Ctrl+Alt+T</span></label>
+          <div class="seg wide" id="micPtt"><button data-ptt="off">Off</button><button data-ptt="ptt">Hold to talk</button><button data-ptt="ptm">Hold to mute</button></div></div>
+        <div class="field"><label>Test your mic</label>
+          <div class="row-btns"><button class="btn" id="micRec">● Record 5 s</button><button class="btn" id="micPlay">▶ Play back</button></div></div>
+        <div class="engine-info" id="micInfo"></div>
+      </div>
+    </section>
+
+    <section class="panel mic-sb-panel m-only" style="--i:4">
+      <div class="panel-head"><h3>Soundboard</h3><button class="chip small" id="sbStop">Stop</button><button class="chip small" id="sbAdd">+ Add .wav</button><input type="file" id="sbFile" accept=".wav,audio/wav" multiple hidden /></div>
+      <div class="sb-grid" id="sbGrid"></div>
+      <div class="field sb-vol"><label>Soundboard level <span id="sbGainVal"></span></label><input type="range" id="sbGain" min="0" max="2" step="0.01" /></div>
     </section>
   </main>
 
@@ -264,6 +363,10 @@
     <div class="pop-save">
       <label class="nf"><input type="text" id="profileNew" maxlength="32" placeholder="Save current sound as…" /></label>
       <button class="btn primary" id="profileSave">Save</button>
+    </div>
+    <div class="pop-import">
+      <button class="btn" id="profileImport" title="Each Equalizer APO / AutoEQ .txt file becomes a profile">Import .txt files as profiles…</button>
+      <input type="file" id="profileImportInput" accept=".txt,.cfg,text/plain" multiple hidden />
     </div>
   </div>
 

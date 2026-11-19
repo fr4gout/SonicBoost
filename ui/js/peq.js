@@ -51,35 +51,126 @@ export function respDb([b0, b1, b2, a1, a2], f) {
 
 // ── Equalizer APO text format ─────────────────────────────────────────
 const num = (s) => parseFloat(String(s).replace(',', '.'));
+export const GRAPHIC_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
+
+/** Same 10 band shapes as the engine's graphic EQ (shelves at both ends). */
+function graphicBand(i, g) {
+  if (i === 0) return design('LSC', 31 * 1.6, g, Math.SQRT1_2);
+  if (i === 9) return design('HSC', 16000 * 0.7, g, Math.SQRT1_2);
+  return design('PK', GRAPHIC_FREQS[i], g, 1.1);
+}
+
+/**
+ * Fits an Equalizer APO "GraphicEQ:" curve (any points, interpolated on a log
+ * frequency axis) onto the 10-band EQ. Neighbouring bands overlap, so the
+ * gains are solved iteratively until the response at every centre matches.
+ */
+export function fitGraphic(points) {
+  const pts = points.filter((p) => isFinite(p[0]) && isFinite(p[1]) && p[0] > 0).sort((a, b) => a[0] - b[0]);
+  const target = (f) => {
+    if (f <= pts[0][0]) return pts[0][1];
+    if (f >= pts[pts.length - 1][0]) return pts[pts.length - 1][1];
+    for (let k = 1; k < pts.length; k++) {
+      if (f <= pts[k][0]) {
+        const [f0, g0] = pts[k - 1], [f1, g1] = pts[k];
+        const t = Math.log(f / f0) / Math.log(f1 / f0);
+        return g0 + (g1 - g0) * t;
+      }
+    }
+    return 0;
+  };
+  const T = GRAPHIC_FREQS.map((f) => clamp(target(f), -12, 12));
+  const g = [...T];
+  for (let it = 0; it < 40; it++) {
+    const bands = g.map((v, i) => graphicBand(i, v));
+    for (let i = 0; i < 10; i++) {
+      const r = bands.reduce((a, c) => a + respDb(c, GRAPHIC_FREQS[i]), 0);
+      g[i] = clamp(g[i] + 0.7 * (T[i] - r), -12, 12);
+    }
+  }
+  return g.map((v) => Math.round(v * 10) / 10);
+}
+
+/**
+ * Parses an Equalizer APO config (also AutoEQ "ParametricEQ.txt").
+ * Supports Preamp, Filter (PK/LS/LSC/HS/HSC/LP/LPQ/HP/HPQ/NO/BP, Q or BW Oct),
+ * GraphicEQ, and recognises routing scripts (Copy/Channel/Delay/Device):
+ * those become the Ambience effect instead of being summed into nonsense.
+ */
 export function parseApo(text) {
-  let preamp = 0; const filters = []; let seen = 0;
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.replace(/#.*$/, '').trim();
-    if (!line) continue;
-    let m = /^preamp\s*:\s*([-+]?[\d.,]+)\s*db/i.exec(line);
-    if (m) { preamp += num(m[1]); seen++; continue; }
+  const lines = text.split(/\r?\n/).map((l) => l.replace(/#.*$/, '').trim()).filter(Boolean);
+  const advanced = lines.some((l) => /^(copy|channel|delay)\s*:/i.test(l));
+  const hasDelay = lines.some((l) => /^delay\s*:/i.test(l));
+  let preamp = 0, graphic = null, scoped = false, seen = 0;
+  const filters = [], warnings = [];
+  for (const line of lines) {
+    let m;
+    if ((m = /^device\s*:/i.exec(line))) { scoped = false; continue; }
+    if ((m = /^channel\s*:\s*(.*)$/i.exec(line))) { scoped = !/^(all|l\s+r|r\s+l)$/i.test(m[1].trim()); continue; }
+    if (/^(copy|delay|include|stage|eval|if|elseif|else|endif|convolution|loudnesscorrection)\s*:/i.test(line)) continue;
+    if ((m = /^preamp\s*:\s*([-+]?[\d.,]+)\s*db/i.exec(line))) {
+      seen++;
+      if (!advanced && !scoped) preamp += num(m[1]);
+      continue;
+    }
+    if ((m = /^graphiceq\s*:\s*(.*)$/i.exec(line))) {
+      seen++;
+      if (graphic) continue; // scripts often add crossover curves later; the first one is the tone curve
+      const pts = m[1].split(';').map((p) => p.trim().split(/\s+/).map(num)).filter((p) => p.length >= 2);
+      if (pts.length >= 2) graphic = fitGraphic(pts);
+      continue;
+    }
     m = /^filter\s*\d*\s*:\s*(on|off)\s+([a-z]+)(?:\s+\d+\s*db)?\s*(.*)$/i.exec(line);
-    if (!m) continue;
+    if (!m || (advanced && scoped)) continue;
     const on = m[1].toUpperCase() === 'ON';
-    let code = m[2].toUpperCase();
     const rest = m[3];
     const fc = /fc\s+([\d.,]+)\s*(k?)hz/i.exec(rest);
     if (!fc) continue;
+    const map = { PK: 'PK', PEQ: 'PK', MODAL: 'PK', LS: 'LSC', LSC: 'LSC', HS: 'HSC', HSC: 'HSC', LP: 'LP', LPQ: 'LP', HP: 'HP', HPQ: 'HP', NO: 'NO', BP: 'BP' };
+    const code = map[m[2].toUpperCase()];
+    if (!code) { warnings.push(`Filter type ${m[2]} isn't supported and was skipped.`); continue; }
     const freq = num(fc[1]) * (fc[2] ? 1000 : 1);
     const gain = num((/gain\s+([-+]?[\d.,]+)\s*db/i.exec(rest) || [0, 0])[1]);
     let q = num((/\bq\s+([\d.,]+)/i.exec(rest) || [0, NaN])[1]);
     const bw = /bw\s+oct\s+([\d.,]+)/i.exec(rest);
     if (isNaN(q) && bw) { const n = Math.pow(2, num(bw[1])); q = Math.sqrt(n) / (n - 1); }
-    const map = { PK: 'PK', PEQ: 'PK', MODAL: 'PK', LS: 'LSC', LSC: 'LSC', HS: 'HSC', HSC: 'HSC', LP: 'LP', LPQ: 'LP', HP: 'HP', HPQ: 'HP', NO: 'NO', BP: 'BP' };
-    code = map[code];
-    if (!code) continue; // all-pass and unknown types are skipped
     if (isNaN(q)) q = code === 'PK' || code === 'NO' || code === 'BP' ? 1 : 0.707;
     filters.push({ enabled: on, kind: code, freq: clamp(freq, 10, 24000), gain: clamp(gain, -24, 24), q: clamp(q, 0.05, 40) });
     seen++;
   }
-  if (!seen) throw new Error('No Equalizer APO lines found. Expected lines like “Filter 1: ON PK Fc 80 Hz Gain -5 dB Q 10”.');
-  return { enabled: true, preamp: clamp(preamp, -30, 30), filters: filters.slice(0, PEQ_MAX), skipped: Math.max(0, filters.length - PEQ_MAX) };
+  if (!seen) throw new Error('No Equalizer APO lines found. Expected lines like “Filter 1: ON PK Fc 80 Hz Gain -5 dB Q 10” or “GraphicEQ: 31 2; 62 4; …”.');
+  let ambience = null;
+  if (advanced) {
+    warnings.push('This is an Equalizer APO routing script (Copy / Channel / Delay). SonicBoost imported its tone curve' + (hasDelay ? ' and recreated its echo and reverb with the Ambience effect.' : '.'));
+    if (hasDelay) ambience = { enabled: true, mix: 0.55, size: 1 };
+  }
+  if (filters.length > PEQ_MAX) warnings.push(`Only the first ${PEQ_MAX} filters were kept.`);
+  const out = { enabled: true, preamp: clamp(preamp, -30, 30), filters: filters.slice(0, PEQ_MAX), graphic, ambience, warnings };
+  const head = autoPreamp(out);
+  if (out.preamp < head - 6) warnings.push(`Its preamp (${out.preamp.toFixed(1)} dB) makes it much quieter than needed. Use “Auto” to set ${head.toFixed(1)} dB.`);
+  return out;
 }
+
+/** Smallest preamp that keeps the curve's loudest point at 0 dB. */
+export function autoPreamp(peq) {
+  const coefs = (peq.filters || []).filter((f) => f.enabled).map((f) => design(f.kind, f.freq, f.gain, f.q));
+  const gbands = (peq.graphic || []).map((g, i) => graphicBand(i, g));
+  let max = 0;
+  for (let k = 0; k <= 240; k++) {
+    const f = 20 * Math.pow(1000, k / 240);
+    let db = 0;
+    for (const c of coefs) db += respDb(c, f);
+    for (const c of gbands) db += respDb(c, f);
+    max = Math.max(max, db);
+  }
+  return -Math.round(max * 10) / 10;
+}
+
+/** "Desk_speakers___monitors.txt" → "Desk speakers & monitors" */
+export function profileNameFromFile(name) {
+  return name.replace(/\.[^.]+$/, '').replace(/_{3}/g, ' & ').replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 32) || 'Imported';
+}
+
 export function toApo(peq) {
   const f2 = (v, d) => (+v).toFixed(d).replace(/\.?0+$/, (m) => (m.startsWith('.') ? '' : m)) || '0';
   const lines = [`# SonicBoost parametric EQ`, `Preamp: ${(+peq.preamp).toFixed(1)} dB`];
@@ -123,6 +214,7 @@ export class ParametricEditor {
   }
 
   setEnabled(on) { this.peq.enabled = on; this.draw(); this.emit(); }
+  autoPreamp(graphic) { this.setPreamp(autoPreamp({ ...this.peq, graphic })); return this.peq.preamp; }
   setPreamp(v) { this.peq.preamp = clamp(Math.round((+v || 0) * 10) / 10, -30, 30); this.syncPre(); this.draw(); this.emit(); }
   syncPre() {
     this.preRange.value = clamp(this.peq.preamp, -20, 10);

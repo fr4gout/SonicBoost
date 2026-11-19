@@ -2,9 +2,12 @@ mod analyzer;
 mod audio;
 mod dsp;
 mod media;
+mod mic;
+mod micdsp;
 mod ring;
 mod settings;
 mod updater;
+mod volume;
 
 use audio::{Engine, EngineStatus, Shared};
 use media::{Media, MediaCmd};
@@ -51,6 +54,12 @@ fn win_state_of(w: &tauri::WebviewWindow) -> WinState {
 }
 
 struct AppState {
+    mic: Arc<mic::MicShared>,
+    mic_engine: Mutex<mic::MicEngine>,
+    mic_status: Mutex<mic::MicStatus>,
+    clips: Mutex<Vec<Arc<Vec<f32>>>>,
+    mic_visible: Arc<std::sync::atomic::AtomicBool>,
+    ptt_down: std::sync::atomic::AtomicBool,
     shared: Arc<Shared>,
     engine: Mutex<Engine>,
     media: Media,
@@ -69,6 +78,10 @@ impl AppState {
         p.pitch.set((s.pitch_semitones + s.pitch_cents / 100.0).clamp(-12.0, 12.0));
         p.width.set(s.width.clamp(0.0, 2.0));
         p.balance.set(s.balance.clamp(-1.0, 1.0));
+        self.shared.follow_volume.store(s.follow_windows_volume, Ordering::Relaxed);
+        p.amb_on.store(s.ambience.enabled, Ordering::Relaxed);
+        p.amb_mix.set(s.ambience.mix.clamp(0.0, 1.0));
+        p.amb_size.set(s.ambience.size.clamp(0.5, 2.0));
         p.bypass.store(s.bypass, Ordering::Relaxed);
         p.limiter.store(s.limiter, Ordering::Relaxed);
         p.bump();
@@ -82,6 +95,53 @@ impl AppState {
         let mut s = self.settings.lock().unwrap();
         f(&mut s);
         self.apply(&s);
+    }
+
+    /// Pushes the mic settings to the mic engine (no restart).
+    fn apply_mic(&self) {
+        let s = self.settings.lock().unwrap();
+        let m = &s.mic;
+        let c = &m.cfg;
+        let down = self.ptt_down.load(Ordering::Relaxed);
+        let muted = m.muted || (m.ptt == "ptt" && !down) || (m.ptt == "ptm" && down);
+        self.mic.ns_on.store(c.ns, Ordering::Relaxed);
+        self.mic.monitor_vol.set(m.monitor_volume.clamp(0.0, 1.5));
+        self.mic.set_params(micdsp::MicParams {
+            boost_db: c.boost_db,
+            gate_on: c.gate_on,
+            gate_db: c.gate_db,
+            eq_preset: c.eq_preset,
+            comp_on: c.comp_on,
+            comp_amount: c.comp_amount,
+            deess_on: c.deess_on,
+            deess_amount: c.deess_amount,
+            mode: micdsp::VoiceMode::from_code(&c.mode),
+            custom_pitch: c.custom_pitch,
+            custom_room: c.custom_room,
+            limiter_on: c.limiter_on,
+            out_db: c.out_db,
+            muted,
+            sb_gain: m.sb_gain,
+        });
+    }
+
+    /// The booster's own cable (never a valid mic output).
+    fn forbidden_mic_output(&self) -> Option<String> {
+        self.status.lock().unwrap().input.as_deref().map(mic::render_side_of)
+    }
+
+    fn restart_mic(&self) -> mic::MicStatus {
+        let m = self.settings.lock().unwrap().mic.clone();
+        let st = if m.enabled {
+            let monitor = if m.monitor_on { Some(m.monitor_device.clone().unwrap_or_else(|| "default".into())) } else { None };
+            self.apply_mic();
+            self.mic_engine.lock().unwrap().start(m.input, m.output, monitor, self.forbidden_mic_output())
+        } else {
+            self.mic_engine.lock().unwrap().stop();
+            mic::MicStatus::default()
+        };
+        *self.mic_status.lock().unwrap() = st.clone();
+        st
     }
 
     fn save(&self) -> Result<(), String> {
@@ -182,6 +242,62 @@ fn set_viz_active(state: State<AppState>, enabled: bool) {
     state.shared.viz_active.store(enabled, Ordering::Relaxed);
 }
 
+/// "glass": Windows acrylic, the desktop shows (blurred) through the window.
+/// Anything else removes the effect.
+fn apply_window_effect(w: &tauri::WebviewWindow, theme: &str) -> Result<(), String> {
+    use tauri::window::{Effect, EffectsBuilder};
+    if theme == "glass" {
+        w.set_effects(EffectsBuilder::new().effect(Effect::Acrylic).build())
+            .or_else(|_| w.set_effects(EffectsBuilder::new().effect(Effect::Blur).build()))
+            .map_err(|e| e.to_string())
+    } else {
+        w.set_effects(None::<tauri::utils::config::WindowEffectsConfig>).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+fn set_window_effect(app: AppHandle, theme: String) -> Result<(), String> {
+    let w = app.get_webview_window("main").ok_or("window missing")?;
+    apply_window_effect(&w, &theme)
+}
+
+#[tauri::command]
+fn set_follow_volume(state: State<AppState>, enabled: bool) -> Result<(), String> {
+    state.update(|s| s.follow_windows_volume = enabled);
+    state.save()
+}
+
+#[tauri::command]
+fn set_ambience(state: State<AppState>, ambience: settings::AmbienceCfg) {
+    state.update(|s| s.ambience = ambience);
+    mark_modified(&state);
+}
+
+/// Creates (or replaces) profiles from imported Equalizer APO files without
+/// changing the current sound. Each entry is a full profile.
+#[tauri::command]
+fn import_profiles(app: AppHandle, state: State<AppState>, profiles: Vec<settings::Profile>) -> Result<ProfilesDto, String> {
+    let dto = {
+        let mut s = state.settings.lock().unwrap();
+        for mut p in profiles {
+            p.name = p.name.trim().chars().take(32).collect();
+            if p.name.is_empty() {
+                continue;
+            }
+            p.peq.filters.truncate(dsp::PEQ_MAX);
+            match s.profiles.iter().position(|x| x.name.eq_ignore_ascii_case(&p.name)) {
+                Some(i) => s.profiles[i] = p,
+                None if s.profiles.len() < 30 => s.profiles.push(p),
+                None => return Err("You can keep up to 30 profiles".into()),
+            }
+        }
+        profiles_dto(&s)
+    };
+    state.save()?;
+    refresh_tray(&app);
+    Ok(dto)
+}
+
 /// Parametric EQ (Equalizer APO style): preamp + up to 20 filters.
 #[tauri::command]
 fn set_peq(state: State<AppState>, peq: settings::ParamEq) {
@@ -191,6 +307,156 @@ fn set_peq(state: State<AppState>, peq: settings::ParamEq) {
         s.peq = p;
     });
     mark_modified(&state);
+}
+
+// ----------------------------------------------------------------- mic
+
+#[derive(Serialize)]
+struct MicState {
+    settings: settings::MicSettings,
+    status: mic::MicStatus,
+    devices: mic::MicDevices,
+    builtin: Vec<settings::MicPreset>,
+    modes: Vec<&'static str>,
+}
+
+#[tauri::command]
+fn mic_get(state: State<AppState>) -> MicState {
+    MicState {
+        settings: state.settings.lock().unwrap().mic.clone(),
+        status: state.mic_status.lock().unwrap().clone(),
+        devices: mic::list_devices(state.forbidden_mic_output().as_deref()),
+        builtin: settings::builtin_mic_presets(),
+        modes: micdsp::VoiceMode::ALL.iter().map(|m| m.code()).collect(),
+    }
+}
+
+/// Saves the whole mic configuration. Devices / on-off changes restart the
+/// mic engine; everything else applies instantly.
+#[tauri::command]
+fn mic_set(state: State<AppState>, mic: settings::MicSettings) -> Result<mic::MicStatus, String> {
+    let restart = {
+        let mut s = state.settings.lock().unwrap();
+        let old = s.mic.clone();
+        let mut m = mic;
+        m.soundboard = old.soundboard.clone(); // managed by sb_add / sb_remove
+        m.presets.truncate(30);
+        let r = m.enabled != old.enabled
+            || m.input != old.input
+            || m.output != old.output
+            || m.monitor_on != old.monitor_on
+            || m.monitor_device != old.monitor_device;
+        s.mic = m;
+        r
+    };
+    let st = if restart { state.restart_mic() } else { state.apply_mic(); state.mic_status.lock().unwrap().clone() };
+    state.save()?;
+    Ok(st)
+}
+
+#[tauri::command]
+fn mic_mute(app: AppHandle, state: State<AppState>, muted: Option<bool>) -> bool {
+    let now = {
+        let mut s = state.settings.lock().unwrap();
+        s.mic.muted = muted.unwrap_or(!s.mic.muted);
+        s.mic.muted
+    };
+    state.apply_mic();
+    let _ = state.save();
+    let _ = app.emit("mic-changed", ());
+    now
+}
+
+#[tauri::command]
+fn mic_test(state: State<AppState>, action: String) -> Result<(), String> {
+    if !state.mic.running.load(Ordering::Acquire) {
+        return Err("Turn the mic on first".into());
+    }
+    match action.as_str() {
+        "record" => {
+            state.mic.start_recording();
+            Ok(())
+        }
+        _ => {
+            let samples = state.mic.rec.lock().map(|r| r.clone()).unwrap_or_default();
+            let dev = state.settings.lock().unwrap().mic.monitor_device.clone();
+            mic::play_test(dev, samples)
+        }
+    }
+}
+
+#[tauri::command]
+fn mic_visible(state: State<AppState>, enabled: bool) {
+    state.mic_visible.store(enabled, Ordering::Relaxed);
+}
+
+fn soundboard_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let d = app.path().app_config_dir().map_err(|e| e.to_string())?.join("soundboard");
+    std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+    Ok(d)
+}
+
+/// Adds a .wav clip to the soundboard (a copy is kept in the app folder).
+#[tauri::command]
+fn sb_add(app: AppHandle, state: State<AppState>, name: String, bytes: Vec<u8>) -> Result<Vec<settings::SoundClip>, String> {
+    let clip = micdsp::decode_wav(&bytes)?;
+    if state.settings.lock().unwrap().mic.soundboard.len() >= 16 {
+        return Err("The soundboard holds up to 16 clips".into());
+    }
+    let safe: String = name.chars().filter(|c| c.is_alphanumeric() || " -_".contains(*c)).take(40).collect();
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let file = soundboard_dir(&app)?.join(format!("{stamp}-{}.wav", safe.trim().replace(' ', "_")));
+    std::fs::write(&file, &bytes).map_err(|e| e.to_string())?;
+    state.clips.lock().unwrap().push(Arc::new(clip));
+    let list = {
+        let mut s = state.settings.lock().unwrap();
+        s.mic.soundboard.push(settings::SoundClip { name: name.chars().take(32).collect(), file: file.display().to_string() });
+        s.mic.soundboard.clone()
+    };
+    state.save()?;
+    Ok(list)
+}
+
+#[tauri::command]
+fn sb_remove(state: State<AppState>, index: usize) -> Result<Vec<settings::SoundClip>, String> {
+    let list = {
+        let mut s = state.settings.lock().unwrap();
+        if index >= s.mic.soundboard.len() {
+            return Err("No clip there".into());
+        }
+        let c = s.mic.soundboard.remove(index);
+        let _ = std::fs::remove_file(&c.file);
+        s.mic.soundboard.clone()
+    };
+    let mut clips = state.clips.lock().unwrap();
+    if index < clips.len() {
+        clips.remove(index);
+    }
+    drop(clips);
+    state.save()?;
+    Ok(list)
+}
+
+#[tauri::command]
+fn sb_play(state: State<AppState>, index: usize) -> Result<(), String> {
+    let clip = state.clips.lock().unwrap().get(index).cloned().ok_or("No clip there")?;
+    state.mic.play_clip(clip);
+    Ok(())
+}
+
+#[tauri::command]
+fn sb_stop(state: State<AppState>) {
+    state.mic.sb_stop.store(true, Ordering::Release);
+}
+
+fn set_voice_mode(app: &AppHandle, index: usize) {
+    if let Some(m) = micdsp::VoiceMode::ALL.get(index) {
+        let st = app.state::<AppState>();
+        st.settings.lock().unwrap().mic.cfg.mode = m.code().into();
+        st.apply_mic();
+        let _ = st.save();
+        let _ = app.emit("mic-changed", m.code());
+    }
 }
 
 // ------------------------------------------------------------ profiles
@@ -294,8 +560,17 @@ fn set_limiter(state: State<AppState>, enabled: bool) {
 }
 
 #[tauri::command]
-fn set_ui(state: State<AppState>, viz: Option<String>, theme: Option<String>, intensity: Option<f32>) {
+fn set_ui(
+    state: State<AppState>,
+    viz: Option<String>,
+    theme: Option<String>,
+    intensity: Option<f32>,
+    quality: Option<String>,
+) {
     state.update(|s| {
+        if let Some(q) = quality {
+            s.quality = q;
+        }
         if let Some(v) = viz {
             s.viz_mode = v;
         }
@@ -503,6 +778,12 @@ const PROFILE_KEYS: [Code; 9] = [
     Code::Digit6, Code::Digit7, Code::Digit8, Code::Digit9,
 ];
 
+const SOUND_KEYS: [Code; 8] = [Code::F1, Code::F2, Code::F3, Code::F4, Code::F5, Code::F6, Code::F7, Code::F8];
+
+fn hotkey_shift(code: Code) -> Shortcut {
+    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), code)
+}
+
 fn hotkey(code: Code) -> Shortcut {
     Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), code)
 }
@@ -514,7 +795,40 @@ fn register_hotkeys(app: &tauri::App) -> tauri::Result<()> {
     app.handle().plugin(
         tauri_plugin_global_shortcut::Builder::new()
             .with_handler(|app, sc, event| {
-                if !matches!(event.state(), ShortcutState::Pressed) {
+                let pressed = matches!(event.state(), ShortcutState::Pressed);
+                // push-to-talk / push-to-mute needs both press and release
+                if sc == &hotkey(Code::KeyT) {
+                    let st = app.state::<AppState>();
+                    st.ptt_down.store(pressed, Ordering::Relaxed);
+                    st.apply_mic();
+                    let _ = app.emit("mic-ptt", pressed);
+                    return;
+                }
+                if !pressed {
+                    return;
+                }
+                if sc == &hotkey(Code::KeyM) {
+                    let st = app.state::<AppState>();
+                    let muted = {
+                        let mut s = st.settings.lock().unwrap();
+                        s.mic.muted = !s.mic.muted;
+                        s.mic.muted
+                    };
+                    st.apply_mic();
+                    let _ = st.save();
+                    let _ = app.emit("mic-changed", if muted { "muted" } else { "unmuted" });
+                    return;
+                }
+                if let Some(i) = PROFILE_KEYS.iter().position(|c| sc == &hotkey_shift(*c)) {
+                    set_voice_mode(app, i);
+                    return;
+                }
+                if let Some(i) = SOUND_KEYS.iter().position(|c| sc == &hotkey_shift(*c)) {
+                    let st = app.state::<AppState>();
+                    let clip = st.clips.lock().unwrap().get(i).cloned();
+                    if let Some(c) = clip {
+                        st.mic.play_clip(c);
+                    }
                     return;
                 }
                 if sc == &hotkey(Code::ArrowUp) {
@@ -537,10 +851,14 @@ fn register_hotkeys(app: &tauri::App) -> tauri::Result<()> {
             })
             .build(),
     )?;
-    let base = [Code::ArrowUp, Code::ArrowDown, Code::KeyB, Code::KeyP, Code::ArrowRight, Code::ArrowLeft];
+    let base = [Code::ArrowUp, Code::ArrowDown, Code::KeyB, Code::KeyP, Code::ArrowRight, Code::ArrowLeft, Code::KeyM, Code::KeyT];
     for code in base.into_iter().chain(PROFILE_KEYS) {
         // Another app may already own a combo; skip it instead of failing.
         let _ = app.global_shortcut().register(hotkey(code));
+    }
+    // mic: Ctrl+Shift+1…9 voice modes, Ctrl+Shift+F1…F8 soundboard
+    for code in PROFILE_KEYS.into_iter().chain(SOUND_KEYS) {
+        let _ = app.global_shortcut().register(hotkey_shift(code));
     }
     Ok(())
 }
@@ -551,6 +869,11 @@ fn spawn_watchdog(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_millis(1500));
         let st = app.state::<AppState>();
+        if st.mic.device_error.swap(false, Ordering::AcqRel) {
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            let ms = st.restart_mic();
+            let _ = app.emit("mic-status", &ms);
+        }
         if st.shared.device_error.swap(false, Ordering::AcqRel) {
             std::thread::sleep(std::time::Duration::from_millis(800));
             let mut status = st.restart();
@@ -623,9 +946,26 @@ pub fn run() {
             let shared = Shared::new();
             let engine = Engine::spawn(shared.clone());
             audio::spawn_analyzer(app.handle().clone(), shared.clone());
+            volume::spawn(app.handle().clone(), shared.clone());
             let media = Media::spawn(app.handle().clone());
 
+            let mic_shared = mic::MicShared::new();
+            let mic_engine = mic::MicEngine::spawn(mic_shared.clone());
+            let mic_visible = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            mic::spawn_meters(app.handle().clone(), mic_shared.clone(), mic_visible.clone());
+            let clips: Vec<Arc<Vec<f32>>> = cfg
+                .mic
+                .soundboard
+                .iter()
+                .map(|c| Arc::new(std::fs::read(&c.file).ok().and_then(|b| micdsp::decode_wav(&b).ok()).unwrap_or_default()))
+                .collect();
             let state = AppState {
+                mic: mic_shared,
+                mic_engine: Mutex::new(mic_engine),
+                mic_status: Mutex::new(mic::MicStatus::default()),
+                clips: Mutex::new(clips),
+                mic_visible,
+                ptt_down: std::sync::atomic::AtomicBool::new(false),
                 shared,
                 engine: Mutex::new(engine),
                 media,
@@ -635,6 +975,7 @@ pub fn run() {
             };
             state.apply(&cfg);
             state.restart();
+            state.restart_mic();
             app.manage(state);
             spawn_watchdog(app.handle().clone());
             if let Err(e) = register_hotkeys(app) {
@@ -644,6 +985,9 @@ pub fn run() {
             // Window: size by mode; stay hidden in the tray when auto-started.
             let win = app.get_webview_window("main").expect("main window");
             size_window(&win, &cfg.mode, true);
+            if cfg.theme == "glass" {
+                let _ = apply_window_effect(&win, "glass");
+            }
             let autostarted = std::env::args().any(|a| a == "--minimized");
             if !(autostarted && cfg.start_minimized) {
                 let _ = win.show();
@@ -669,6 +1013,7 @@ pub fn run() {
                         let st = app.state::<AppState>();
                         let _ = st.save();
                         st.engine.lock().unwrap().stop();
+                        st.mic_engine.lock().unwrap().stop();
                         app.exit(0);
                     }
                     _ => {}
@@ -698,6 +1043,19 @@ pub fn run() {
             set_bypass,
             set_stereo,
             set_peq,
+            set_ambience,
+            set_follow_volume,
+            set_window_effect,
+            mic_get,
+            mic_set,
+            mic_mute,
+            mic_test,
+            mic_visible,
+            sb_add,
+            sb_remove,
+            sb_play,
+            sb_stop,
+            import_profiles,
             set_custom_presets,
             set_viz_active,
             set_limiter,

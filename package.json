@@ -1,7 +1,7 @@
 {
   "name": "sonicboost",
   "private": true,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "SonicBoost - Windows sound booster, 10-band EQ, pitch shifter, Now Playing and visualizer",
   "scripts": {
     "dev": "tauri dev",

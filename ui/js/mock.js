@@ -8,6 +8,7 @@ const state = {
       { enabled: true, kind: 'PK', freq: 80, gain: -5, q: 10 }, { enabled: true, kind: 'PK', freq: 1800, gain: 3, q: 1 },
       { enabled: true, kind: 'PK', freq: 3200, gain: 3.5, q: 1.2 }, { enabled: true, kind: 'PK', freq: 8000, gain: -2, q: 1 }] },
     profiles: [], active_profile: '',
+    ambience: { enabled: false, mix: 0.45, size: 1 }, quality: 'balanced', follow_windows_volume: true,
     input_device: null, output_device: null, mode: 'compact', viz_mode: 'radial',
     theme: 'dark', intensity: 1, start_minimized: true, auto_update: true, first_run: false,
   },
@@ -25,6 +26,40 @@ state.settings.profiles = [
   { name: 'SYNC Signature', boost: 1.5, eq: Array(10).fill(0), preset: 'Flat', peq: { ...structuredClone(state.settings.peq), enabled: true }, pitch_semitones: 0, pitch_cents: 0, width: 1, balance: 0, limiter: true },
   { name: 'Flat (no processing)', boost: 1, eq: Array(10).fill(0), preset: 'Flat', peq: { ...structuredClone(state.settings.peq), enabled: false }, pitch_semitones: 0, pitch_cents: 0, width: 1, balance: 0, limiter: true },
 ];
+
+// ── mic (mirrors settings.rs defaults and built-in presets) ─────────────
+const micCfg = (o = {}) => ({ ns: true, boost_db: 0, gate_on: true, gate_db: -45, eq_preset: 1, comp_on: true, comp_amount: 0.5,
+  deess_on: false, deess_amount: 0.5, mode: 'natural', custom_pitch: 0, custom_room: 0, limiter_on: true, out_db: 0, ...o });
+const micBuiltin = [
+  ['Discord / Gaming', {}], ['Streaming', { boost_db: 3, gate_db: -50, eq_preset: 2, comp_amount: 0.65, deess_on: true }],
+  ['Podcast', { gate_db: -52, eq_preset: 2, comp_amount: 0.75, deess_on: true, deess_amount: 0.6 }],
+  ['Meetings / Zoom', { gate_db: -48, eq_preset: 3, comp_amount: 0.4 }], ['Noisy room', { boost_db: 2, gate_db: -38 }],
+  ['Singing', { ns: false, gate_on: false, eq_preset: 5, comp_amount: 0.35, deess_on: true, deess_amount: 0.4 }],
+  ['Whisper / ASMR', { boost_db: 12, gate_db: -60, eq_preset: 4, comp_amount: 0.8 }],
+  ['Raw (no processing)', { ns: false, gate_on: false, eq_preset: 0, comp_on: false }],
+].map(([name, o]) => ({ name, cfg: micCfg(o) }));
+const mic = {
+  settings: { enabled: !/micoff/.test(location.search), input: null, output: null, monitor_on: false, monitor_device: null, monitor_volume: 0.8,
+    ptt: 'off', muted: false, cfg: micCfg({ boost_db: 3, gate_db: -50, eq_preset: 2, comp_amount: 0.65, deess_on: true }), preset: 'Streaming',
+    presets: [{ name: 'My stream voice', cfg: micCfg({ boost_db: 4, eq_preset: 2, comp_amount: 0.7, deess_on: true }) }],
+    soundboard: [{ name: 'Airhorn', file: '' }, { name: 'Applause', file: '' }, { name: 'Drum roll', file: '' }, { name: 'Laugh track', file: '' }, { name: 'Bruh', file: '' }, { name: 'GG', file: '' }], sb_gain: 0.8 },
+  devices: { inputs: ['Microphone (USB Audio)', 'Headset Microphone (WH-1000XM5)'], outputs: ['Speakers (Realtek(R) Audio)', 'Headphones (WH-1000XM5)', 'CABLE In 16ch (VB-Audio Virtual Cable)'],
+    suggested_output: 'CABLE In 16ch (VB-Audio Virtual Cable)', default_input: 'Microphone (USB Audio)' },
+  status: null,
+};
+const micStatus = () => (mic.settings.enabled
+  ? { running: true, input: mic.settings.input || 'Microphone (USB Audio)', output: mic.settings.output || mic.devices.suggested_output, monitor: mic.settings.monitor_on ? 'Headphones (WH-1000XM5)' : null, latency_ms: 35, error: null }
+  : { running: false, input: null, output: null, monitor: null, latency_ms: 0, error: null });
+let micVisible = false, micRec = 0;
+function micFrame() {
+  if (!micVisible) return;
+  const t = performance.now() / 1000, on = mic.settings.enabled && !mic.settings.muted;
+  const talk = on ? Math.max(0, Math.sin(t * 1.7) * 0.6 + Math.sin(t * 5.3) * 0.3 + 0.25) : 0;
+  const lvl = 0.004 + talk * 0.32;
+  const wave = [];
+  for (let i = 0; i < 128; i++) wave.push(talk * (Math.sin(i * 0.9 + t * 40) * 0.3 + Math.sin(i * 0.23 + t * 13) * 0.25 + (Math.random() - 0.5) * 0.12) * Math.sin((i / 127) * Math.PI));
+  emit('mic-frame', { running: on, input: lvl, output: lvl * 1.4, gr_db: talk * 9, gate: talk > 0.08, voice: talk > 0.15 ? 0.9 : 0.1, recording: micRec > performance.now(), wave });
+}
 
 const listeners = {};
 const emit = (ev, data) => (listeners[ev] || []).forEach((cb) => cb(data));
@@ -102,7 +137,9 @@ function start() {
   if (started) return;
   started = true;
   setInterval(frame, 16);
+  setInterval(micFrame, 33);
   setTimeout(() => emit('media-status', mediaStatus(true)), 300);
+  setTimeout(() => emit('windows-volume', { percent: 40, muted: false, active: true }), 400);
   setInterval(() => {
     if (playing) pos += 1;
     if (pos >= tracks[ti].dur) { ti = (ti + 1) % tracks.length; pos = 0; emit('media-status', mediaStatus(true)); return; }
@@ -125,6 +162,12 @@ export const mock = {
       case 'set_eq_band': s.eq[a.index] = a.gain; s.preset = 'Custom'; break;
       case 'set_eq': s.eq = [...a.gains]; s.preset = a.preset; break;
       case 'set_pitch': s.pitch_semitones = a.semitones; s.pitch_cents = a.cents; break;
+      case 'set_ambience': s.ambience = a.ambience; s.active_profile = ''; break;
+      case 'set_follow_volume': s.follow_windows_volume = a.enabled; break;
+      case 'set_window_effect': break;
+      case 'import_profiles':
+        for (const p of a.profiles) { const i = s.profiles.findIndex((x) => x.name.toLowerCase() === p.name.toLowerCase()); if (i >= 0) s.profiles[i] = p; else s.profiles.push(p); }
+        return { profiles: s.profiles.map((p) => p.name), active: s.active_profile };
       case 'set_peq': s.peq = a.peq; s.active_profile = ''; break;
       case 'list_profiles': return { profiles: s.profiles.map((p) => p.name), active: s.active_profile };
       case 'save_profile': {
@@ -161,6 +204,14 @@ export const mock = {
         ? { current: '1.0.0', latest: '1.0.1', available: true, notes: '', url: 'https://github.com/fr4gout/SonicBoost/releases/download/v1.0.1/SonicBoost_1.0.1_x64-setup.exe', page: '', size: 4718592 }
         : { current: '1.0.0', latest: '1.0.0', available: false, notes: '', url: null, page: '', size: 0 };
       case 'install_update': { let d = 0; const t = setInterval(() => { d += 400000; emit('update-progress', { done: Math.min(d, 4718592), total: 4718592 }); if (d >= 4718592) clearInterval(t); }, 150); return new Promise(() => {}); }
+      case 'mic_get': return structuredClone({ settings: mic.settings, status: micStatus(), devices: mic.devices, builtin: micBuiltin, modes: ['natural', 'broadcast', 'deep', 'high', 'chipmunk', 'robot', 'radio', 'telephone', 'megaphone', 'monster', 'alien', 'cave', 'custom'] });
+      case 'mic_set': { const sb = mic.settings.soundboard; mic.settings = structuredClone(a.mic); mic.settings.soundboard = sb; return micStatus(); }
+      case 'mic_mute': mic.settings.muted = a.muted ?? !mic.settings.muted; return mic.settings.muted;
+      case 'mic_visible': micVisible = a.enabled; break;
+      case 'mic_test': if (!mic.settings.enabled) throw 'Turn the mic on first'; if (a.action === 'record') micRec = performance.now() + 5000; break;
+      case 'sb_add': mic.settings.soundboard.push({ name: a.name, file: '' }); return structuredClone(mic.settings.soundboard);
+      case 'sb_remove': mic.settings.soundboard.splice(a.index, 1); return structuredClone(mic.settings.soundboard);
+      case 'sb_play': case 'sb_stop': break;
       case 'set_auto_update': state.settings.auto_update = a.enabled; break;
       case 'media_control':
         if (a.action === 'refresh') { setTimeout(() => emit('media-status', mediaStatus(true)), 50); break; }

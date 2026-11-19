@@ -42,6 +42,10 @@ pub struct Params {
     pub pitch: AtomicF32,
     pub width: AtomicF32,
     pub balance: AtomicF32,
+    pub master: AtomicF32,
+    pub amb_on: AtomicBool,
+    pub amb_mix: AtomicF32,
+    pub amb_size: AtomicF32,
     pub bypass: AtomicBool,
     pub limiter: AtomicBool,
     pub version: AtomicU64,
@@ -55,6 +59,10 @@ impl Params {
             pitch: AtomicF32::new(0.0),
             width: AtomicF32::new(1.0),
             balance: AtomicF32::new(0.0),
+            master: AtomicF32::new(1.0),
+            amb_on: AtomicBool::new(false),
+            amb_mix: AtomicF32::new(0.5),
+            amb_size: AtomicF32::new(1.0),
             bypass: AtomicBool::new(false),
             limiter: AtomicBool::new(true),
             version: AtomicU64::new(1),
@@ -70,6 +78,10 @@ impl Params {
             pitch_st: self.pitch.get(),
             width: self.width.get(),
             balance: self.balance.get(),
+            master: self.master.get(),
+            amb_on: self.amb_on.load(Ordering::Relaxed),
+            amb_mix: self.amb_mix.get(),
+            amb_size: self.amb_size.get(),
             bypass: self.bypass.load(Ordering::Relaxed),
             limiter: self.limiter.load(Ordering::Relaxed),
         }
@@ -110,6 +122,8 @@ pub struct Shared {
     pub device_error: AtomicBool,
     /// False while the window is hidden: analyzer stops to save CPU.
     pub viz_active: AtomicBool,
+    /// Apply the Windows volume slider (virtual cables ignore it).
+    pub follow_volume: AtomicBool,
     pub analysis: Arc<Ring>,
 }
 
@@ -125,6 +139,7 @@ impl Shared {
             running: AtomicBool::new(false),
             device_error: AtomicBool::new(false),
             viz_active: AtomicBool::new(true),
+            follow_volume: AtomicBool::new(true),
             analysis: Ring::new(16_384),
         })
     }

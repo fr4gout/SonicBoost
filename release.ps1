@@ -17,6 +17,8 @@ Set-Location $PSScriptRoot
 function Fail($m) { Write-Host "`n$m" -ForegroundColor Red; exit 1 }
 $utf8 = New-Object System.Text.UTF8Encoding($false)   # no BOM (JSON/TOML parsers dislike it)
 function Save($path, $text) { [IO.File]::WriteAllText((Resolve-Path $path), $text, $utf8) }
+# Windows PowerShell 5.1 reads files as ANSI by default, which garbles UTF-8 (e.g. "‹" -> "â€¹").
+function Load($path) { [IO.File]::ReadAllText((Resolve-Path $path), $utf8) }
 function ReplaceFirst($text, $pattern, $replacement) { ([regex]$pattern).Replace($text, $replacement, 1) }
 
 if ($Version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$') { Fail "Version must look like 1.2.3 or 1.2.3-beta.1" }
@@ -33,20 +35,20 @@ if (-not $DryRun) {
     if (git tag -l $tag) { Fail "Tag $tag already exists." }
 }
 
-$current = (Get-Content "src-tauri\tauri.conf.json" -Raw | ConvertFrom-Json).version
+$current = ((Load "src-tauri\tauri.conf.json") | ConvertFrom-Json).version
 Write-Host "Releasing $current -> $Version" -ForegroundColor White
 
 # 1. versions
-$conf = Get-Content "src-tauri\tauri.conf.json" -Raw
+$conf = Load "src-tauri\tauri.conf.json"
 $conf = ReplaceFirst $conf '"version"\s*:\s*"[^"]+"' ('"version": "' + $Version + '"')
-$cargo = Get-Content "src-tauri\Cargo.toml" -Raw
+$cargo = Load "src-tauri\Cargo.toml"
 $cargo = ReplaceFirst $cargo '(?m)^version\s*=\s*"[^"]+"' ('version = "' + $Version + '"')
-$pkg = Get-Content "package.json" -Raw
+$pkg = Load "package.json"
 $pkg = ReplaceFirst $pkg '"version"\s*:\s*"[^"]+"' ('"version": "' + $Version + '"')
 
 # 2. changelog: [Unreleased] -> [Version] - date, update compare links
 $date = Get-Date -Format "yyyy-MM-dd"
-$log = Get-Content "CHANGELOG.md" -Raw
+$log = Load "CHANGELOG.md"
 if ($log -notmatch '(?m)^## \[Unreleased\]') { Fail "CHANGELOG.md has no '## [Unreleased]' section." }
 $log = ReplaceFirst $log '(?m)^## \[Unreleased\][ \t]*\r?\n' "## [Unreleased]`n`n## [$Version] - $date`n"
 $repo = "https://github.com/fr4gout/SonicBoost"
