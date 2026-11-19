@@ -104,9 +104,9 @@ Virtual cables ignore their own volume slider, so once Windows plays into the ca
 
 ## Mic
 
-`mic.rs` runs a second, independent path: **mic → MicChain → second virtual cable** (for example CABLE In 16ch), with an optional monitor output.
+`mic.rs` runs a second, independent path: **mic → MicChain → second virtual cable** (for example VB-Audio Hi-Fi Cable), with an optional monitor output.
 
-- **Devices.** `list_devices` lists inputs and outputs and suggests a cable that isn't the booster's (the render side of the booster's capture cable is refused, so the two paths can't loop).
+- **Devices.** `list_devices` lists inputs and outputs and suggests a cable that isn't the booster's. Cables are compared by driver name (`cable_family`), because VB-CABLE's *CABLE In 16ch* is a second input into the same cable as *CABLE Input*: using it would play your voice through the booster.
 - **Capture.** Any channel count is mixed to mono and resampled to 48 kHz, then cut into 480-sample frames for RNNoise (`nnnoiseless::DenoiseState`, scaled to ±32768 and back).
 - **Chain** (`micdsp.rs`, unit-tested): denoise → mic boost → gate (hysteresis + hold) → voice EQ preset → compressor → de-esser → voice mode (pitch shifter, mode EQ, ring modulator, comb, saturation, sample-and-hold, vibrato) → room → mute → soundboard mix (8 voices, `Arc` clips) → output level → limiter.
 - **Output.** Mono is written to the first two channels of the cable. A 20 ms ring separates the device clocks, with the same re-priming and drift correction as the speaker path.

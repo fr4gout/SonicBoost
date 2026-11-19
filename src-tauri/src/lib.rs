@@ -128,7 +128,9 @@ impl AppState {
 
     /// The booster's own cable (never a valid mic output).
     fn forbidden_mic_output(&self) -> Option<String> {
-        self.status.lock().unwrap().input.as_deref().map(mic::render_side_of)
+        let running = self.status.lock().unwrap().input.clone();
+        let chosen = self.settings.lock().unwrap().input_device.clone();
+        audio::booster_cable_guess(running.as_deref().or(chosen.as_deref()))
     }
 
     fn restart_mic(&self) -> mic::MicStatus {

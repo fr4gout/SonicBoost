@@ -7,7 +7,7 @@
 //!
 //! Runs on its own threads, completely independent from the speaker booster.
 
-use crate::audio::{is_cable, AtomicF32};
+use crate::audio::{is_cable, same_cable, AtomicF32};
 use crate::dsp::Resampler;
 use crate::micdsp::{MicChain, MicParams};
 use crate::ring::Ring;
@@ -190,12 +190,9 @@ pub fn list_devices(forbid: Option<&str>) -> MicDevices {
         .output_devices()
         .map(|it| it.filter_map(|d| d.name().ok()).collect())
         .unwrap_or_default();
-    let ok = |n: &String| is_cable(n) && Some(n.as_str()) != forbid;
-    let suggested_output = outputs
-        .iter()
-        .find(|n| ok(n) && n.to_lowercase().contains("16ch"))
-        .or_else(|| outputs.iter().find(|n| ok(n)))
-        .cloned();
+    // any cable except the booster's own (both of its inputs count)
+    let ok = |n: &String| is_cable(n) && !forbid.is_some_and(|f| same_cable(n, f));
+    let suggested_output = outputs.iter().find(|n| ok(n)).cloned();
     let default_input = host.default_input_device().and_then(|d| d.name().ok()).filter(|n| !is_cable(n));
     MicDevices { inputs, outputs, suggested_output, default_input }
 }
@@ -283,10 +280,10 @@ fn build(
         Some(n) => n.to_string(),
         None => list_devices(forbid)
             .suggested_output
-            .ok_or_else(|| anyhow!("MIC_CABLE_NOT_FOUND: A second virtual cable is needed for the mic (e.g. VB-Audio \"CABLE In 16ch\")."))?,
+            .ok_or_else(|| anyhow!("MIC_CABLE_NOT_FOUND: The mic needs a second, separate virtual cable (VB-Audio Hi-Fi Cable or CABLE A+B). CABLE In 16ch is the other end of the booster's own cable, so it can't be used."))?,
     };
-    if Some(out_name.as_str()) == forbid {
-        bail!("That cable is already used by the speaker booster. Pick a different one (e.g. \"CABLE In 16ch\").");
+    if forbid.is_some_and(|f| same_cable(&out_name, f)) {
+        bail!("\"{out_name}\" is part of the cable the speaker booster records, so your voice would play through your speakers. Install a second cable (VB-Audio Hi-Fi Cable or CABLE A+B) and pick it here.");
     }
     let out_dev = find(&host, Some(&out_name), false)?.ok_or_else(|| anyhow!("Mic output \"{out_name}\" not found."))?;
     let mon_dev = match monitor {

@@ -156,6 +156,28 @@ pub struct DeviceList {
     pub cable_found: bool,
 }
 
+/// Which virtual cable a device belongs to. Both ends of one cable share a
+/// driver name, e.g. "CABLE Input", "CABLE In 16ch", "CABLE Output" and
+/// "CABLE Out 16ch" are all "(VB-Audio Virtual Cable)": VB-CABLE's 16-channel
+/// input is a second way into the SAME cable, not a separate one.
+pub fn cable_family(name: &str) -> String {
+    let n = name.to_lowercase();
+    if let (Some(a), Some(b)) = (n.rfind('('), n.rfind(')')) {
+        if b > a + 1 {
+            return n[a + 1..b].trim().to_string();
+        }
+    }
+    let mut s = n;
+    for w in ["out 16ch", "in 16ch", "output", "input"] {
+        s = s.replace(w, "");
+    }
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+/// True when two device names are ends of the same virtual cable.
+pub fn same_cable(a: &str, b: &str) -> bool {
+    is_cable(a) && is_cable(b) && cable_family(a) == cable_family(b)
+}
+
 pub fn is_cable(name: &str) -> bool {
     let n = name.to_lowercase();
     n.contains("cable") || n.contains("voicemeeter") || n.contains("virtual")
@@ -167,7 +189,7 @@ pub fn is_cable(name: &str) -> bool {
 pub fn pick_cable<'a>(inputs: &'a [String], default_output: Option<&str>) -> Option<&'a String> {
     let cables: Vec<&String> = inputs.iter().filter(|n| is_cable(n)).collect();
     if let Some(out) = default_output.filter(|o| is_cable(o)) {
-        if let Some(c) = cables.iter().find(|n| crate::mic::render_side_of(n) == out) {
+        if let Some(c) = cables.iter().find(|n| same_cable(n, out) && !n.to_lowercase().contains("16ch")) {
             return Some(c);
         }
     }
@@ -202,7 +224,7 @@ pub fn set_mic_cable(render_name: Option<String>) {
 }
 /// True when recording `capture_name` would pick up the mic's processed voice.
 pub fn is_mic_cable(capture_name: &str) -> bool {
-    MIC_CABLE.lock().unwrap().as_deref().is_some_and(|m| crate::mic::render_side_of(capture_name) == m)
+    MIC_CABLE.lock().unwrap().as_deref().is_some_and(|m| same_cable(capture_name, m))
 }
 
 fn find_input(host: &cpal::Host, name: Option<&str>) -> Result<cpal::Device> {
@@ -512,6 +534,17 @@ static QUIET_UNTIL: AtomicU64 = AtomicU64::new(0);
 fn now_ms() -> u64 {
     START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
 }
+/// The cable the booster records from, or would pick if it isn't running yet.
+pub fn booster_cable_guess(chosen: Option<&str>) -> Option<String> {
+    if let Some(c) = chosen {
+        return Some(c.to_string());
+    }
+    let host = cpal::default_host();
+    let names: Vec<String> = host.input_devices().ok()?.filter_map(|d| d.name().ok()).collect();
+    let out = host.default_output_device().and_then(|d| d.name().ok());
+    pick_cable(&names, out.as_deref()).cloned()
+}
+
 /// Called on window move / resize.
 pub fn mark_ui_busy() {
     QUIET_UNTIL.store(now_ms() + 250, Ordering::Relaxed);
@@ -568,5 +601,14 @@ mod cable_tests {
         assert_eq!(pick_cable(&ins, Some("Speakers (Realtek)")).unwrap(), &ins[2]);
         let only16 = vec!["CABLE Out 16ch (VB-Audio Virtual Cable)".to_string()];
         assert_eq!(pick_cable(&only16, None).unwrap(), &only16[0]);
+    }
+    #[test]
+    fn sixteen_channel_input_is_the_same_cable() {
+        use super::same_cable;
+        assert!(same_cable("CABLE In 16ch (VB-Audio Virtual Cable)", "CABLE Output (VB-Audio Virtual Cable)"));
+        assert!(same_cable("CABLE Input (VB-Audio Virtual Cable)", "CABLE Out 16ch (VB-Audio Virtual Cable)"));
+        assert!(!same_cable("Hi-Fi Cable Input (VB-Audio Hi-Fi Cable)", "CABLE Output (VB-Audio Virtual Cable)"));
+        assert!(!same_cable("CABLE-A Input (VB-Audio Cable A)", "CABLE Output (VB-Audio Virtual Cable)"));
+        assert!(!same_cable("Speakers (Realtek(R) Audio)", "Speakers (Realtek(R) Audio)"));
     }
 }

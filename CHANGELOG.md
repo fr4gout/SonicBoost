@@ -5,6 +5,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-11-20
+
+### Fixed
+- **Hearing your own voice through the speakers (the real cause).** VB-CABLE's *CABLE In 16ch* is a second input into the **same** cable as *CABLE Input*, not a separate cable, so the mic's voice went into CABLE Output, which the booster records and plays to your speakers. SonicBoost now treats every end of one cable as the same cable: the mic never uses the booster's cable (either input), and the booster never records the mic's. The Mic view explains this and links to a second cable (VB-Audio Hi-Fi Cable or CABLE A+B) when one is needed.
+
 ## [1.0.5] - 2026-11-20
 
 ### Fixed
@@ -100,7 +105,8 @@ First public release.
 - The analyzer pauses while the window is hidden.
 - NSIS (`-setup.exe`) and MSI installers.
 
-[Unreleased]: https://github.com/fr4gout/SonicBoost/compare/v1.0.5...HEAD
+[Unreleased]: https://github.com/fr4gout/SonicBoost/compare/v1.0.6...HEAD
+[1.0.6]: https://github.com/fr4gout/SonicBoost/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/fr4gout/SonicBoost/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/fr4gout/SonicBoost/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/fr4gout/SonicBoost/compare/v1.0.2...v1.0.3

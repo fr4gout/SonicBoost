@@ -191,7 +191,9 @@ export class MicView {
     const out = this.M.output || d.suggested_output;
     $('micTip').innerHTML = out
       ? `In Discord, OBS or Zoom pick <b>${esc(out.replace('Input', 'Output').replace('CABLE In ', 'CABLE Out '))}</b> as the microphone.`
-      : 'Install a second virtual cable (VB-Audio <b>Hi-Fi Cable</b> or <b>CABLE A/B</b>) to send your processed voice to other apps. The first cable stays with the booster.';
+      : 'The mic needs a <b>second, separate</b> virtual cable: install VB-Audio <b>Hi-Fi Cable</b> (free) or <b>CABLE A+B</b>, then restart. <b>CABLE In 16ch</b> won\'t work: it\'s the other end of the booster\'s own cable, so your voice would come out of your speakers. <button class="chip small" id="micGetCable">Get a second cable</button>';
+    const get = $('micGetCable');
+    if (get) get.onclick = () => invoke('open_link', { target: 'vbcable' }).catch(() => {});
   }
 
   renderSoundboard() {

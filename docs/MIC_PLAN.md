@@ -17,9 +17,11 @@ Windows has no supported way for a normal app to change another app's microphone
 | Path | Device | Used by |
 |:--|:--|:--|
 | Speakers | Windows output → **CABLE Input** → CABLE Output → SonicBoost → speakers | the booster |
-| **Mic** | your mic → SonicBoost Mic → **CABLE In 16ch** → **CABLE Out 16ch** | Discord / OBS / games choose **CABLE Out 16ch** as their microphone |
+| **Mic** | your mic → SonicBoost Mic → **Hi-Fi Cable Input** → **Hi-Fi Cable Output** | Discord / OBS / games choose **Hi-Fi Cable Output** as their microphone |
 
-Any second VB-Audio cable works (CABLE In 16ch, Hi-Fi Cable, CABLE-A/B). SonicBoost picks one automatically and refuses the cable the booster listens to, so the two paths can never loop into each other.
+Any second, separate cable works: VB-Audio **Hi-Fi Cable** (free) or **CABLE A+B**. SonicBoost picks one automatically and refuses every end of the cable the booster records, so the two paths can never loop into each other.
+
+> **Not CABLE In 16ch.** VB-CABLE installs two inputs, *CABLE Input* and *CABLE In 16ch*, but they feed the **same** CABLE Output. Sending your voice there plays it through the booster to your speakers, so SonicBoost won't use it for the mic.
 
 ```mermaid
 flowchart LR
@@ -28,17 +30,17 @@ flowchart LR
         direction LR
         A1["Noise suppression"] --> A0["Mic boost"] --> A2["Noise gate"] --> A3["Voice EQ"] --> A5["Compressor"] --> A6["De-esser"] --> A4["Voice mode + room"] --> A7["Mute + soundboard mix"] --> A8["Output level + limiter"]
     end
-    P -->|"WASAPI playback"| C["CABLE In 16ch"]
-    C --> D["CABLE Out 16ch<br/>= mic in Discord / OBS"]
+    P -->|"WASAPI playback"| C["Hi-Fi Cable Input"]
+    C --> D["Hi-Fi Cable Output<br/>= mic in Discord / OBS"]
     P -.->|"optional"| H["🎧 Monitor<br/>(hear yourself)"]
 ```
 
 The speaker and mic paths are independent threads with their own buffers, so mic processing never touches the music path, and the reverse.
 
 ### Setup in 3 steps
-1. Install a second virtual cable (VB-Audio **Hi-Fi Cable** or **CABLE A/B**, or the 16-channel CABLE), then restart.
+1. Install a second, separate virtual cable (VB-Audio **Hi-Fi Cable** or **CABLE A+B**), then restart.
 2. Open SonicBoost, click the **🎙 Mic** button in the title bar, and press the power button.
-3. In Discord / OBS / Zoom, choose **CABLE Out 16ch** (or the output side of your second cable) as the microphone. The Mic view shows the exact name to pick.
+3. In Discord / OBS / Zoom, choose the output side of your second cable (for example **Hi-Fi Cable Output**) as the microphone. The Mic view shows the exact name to pick.
 
 ---
 

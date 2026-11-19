@@ -13,7 +13,7 @@ const state = {
     theme: 'dark', intensity: 1, start_minimized: true, auto_update: true, first_run: false,
   },
   version: '1.0.0',
-  status: { running: true, input: 'CABLE Output (VB-Audio Virtual Cable)', output: 'Speakers (Realtek(R) Audio)', sample_rate: 48000, input_rate: 48000, latency_ms: 35, error: null, listening: /listen/.test(location.search) ? ['CABLE Out 16ch (VB-Audio Virtual Cable)'] : [] },
+  status: { running: true, input: 'CABLE Output (VB-Audio Virtual Cable)', output: 'Speakers (Realtek(R) Audio)', sample_rate: 48000, input_rate: 48000, latency_ms: 35, error: null, listening: /listen/.test(location.search) ? ['Hi-Fi Cable Output (VB-Audio Hi-Fi Cable)'] : [] },
   autostart: true,
   devices: {
     inputs: ['CABLE Output (VB-Audio Virtual Cable)', 'Microphone (USB Audio)'],
@@ -43,12 +43,12 @@ const mic = {
     ptt: 'off', muted: false, cfg: micCfg({ boost_db: 3, gate_db: -50, eq_preset: 2, comp_amount: 0.65, deess_on: true }), preset: 'Streaming',
     presets: [{ name: 'My stream voice', cfg: micCfg({ boost_db: 4, eq_preset: 2, comp_amount: 0.7, deess_on: true }) }],
     soundboard: [{ name: 'Airhorn', file: '' }, { name: 'Applause', file: '' }, { name: 'Drum roll', file: '' }, { name: 'Laugh track', file: '' }, { name: 'Bruh', file: '' }, { name: 'GG', file: '' }], sb_gain: 0.8 },
-  devices: { inputs: ['Microphone (USB Audio)', 'Headset Microphone (WH-1000XM5)'], outputs: ['Speakers (Realtek(R) Audio)', 'Headphones (WH-1000XM5)', 'CABLE In 16ch (VB-Audio Virtual Cable)'],
-    suggested_output: 'CABLE In 16ch (VB-Audio Virtual Cable)', default_input: 'Microphone (USB Audio)' },
+  devices: { inputs: ['Microphone (USB Audio)', 'Headset Microphone (WH-1000XM5)'], outputs: ['Speakers (Realtek(R) Audio)', 'Headphones (WH-1000XM5)', 'Hi-Fi Cable Input (VB-Audio Hi-Fi Cable)'],
+    suggested_output: 'Hi-Fi Cable Input (VB-Audio Hi-Fi Cable)', default_input: 'Microphone (USB Audio)' },
   status: null,
 };
 const micStatus = () => (mic.settings.enabled
-  ? { running: true, input: mic.settings.input || 'Microphone (USB Audio)', output: mic.settings.output || mic.devices.suggested_output, monitor: mic.settings.monitor_on ? 'Headphones (WH-1000XM5)' : null, latency_ms: 35, error: null, listening: /listen/.test(location.search) ? ['CABLE Out 16ch (VB-Audio Virtual Cable)'] : [] }
+  ? { running: true, input: mic.settings.input || 'Microphone (USB Audio)', output: mic.settings.output || mic.devices.suggested_output, monitor: mic.settings.monitor_on ? 'Headphones (WH-1000XM5)' : null, latency_ms: 35, error: null, listening: /listen/.test(location.search) ? ['Hi-Fi Cable Output (VB-Audio Hi-Fi Cable)'] : [] }
   : { running: false, input: null, output: null, monitor: null, latency_ms: 0, error: null, listening: [] });
 let micVisible = false, micRec = 0;
 function micFrame() {

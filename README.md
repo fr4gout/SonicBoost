@@ -157,7 +157,7 @@ Click **🎙** in the title bar for the Mic view. It processes your microphone i
 | **Control** | Mute, push-to-talk or push-to-mute, monitor (hear yourself) on any output, and a 5-second mic test |
 | **Meters** | Input, output and gain reduction, Gate / Voice / PTT lights, and a live waveform |
 
-**Setup:** install a second virtual cable (VB-Audio Hi-Fi Cable, CABLE-A/B or the 16-channel CABLE), turn the mic on, then pick the cable's output side (for example **CABLE Out 16ch**) as the microphone in your app. The Mic view shows the exact name. Added latency is about 35 ms.
+**Setup:** install a second, separate virtual cable (VB-Audio Hi-Fi Cable or CABLE A+B; VB-CABLE's own *CABLE In 16ch* is the same cable as the booster's and won't work), turn the mic on, then pick the cable's output side (for example **Hi-Fi Cable Output**) as the microphone in your app. The Mic view shows the exact name. Added latency is about 35 ms.
 
 Full details: [**docs/MIC_PLAN.md**](docs/MIC_PLAN.md).
 
@@ -183,7 +183,7 @@ flowchart LR
     G["Windows media session"] -.->|"Now Playing"| F
 ```
 
-The mic runs on its own thread with its own buffers: **mic → SonicBoost Mic → CABLE In 16ch → CABLE Out 16ch → Discord / OBS**.
+The mic runs on its own thread with its own buffers: **mic → SonicBoost Mic → Hi-Fi Cable Input → Hi-Fi Cable Output → Discord / OBS**.
 
 The full design (threads, lock-free buffers, DSP maths) is documented in [**docs/ARCHITECTURE.md**](docs/ARCHITECTURE.md).
 
@@ -395,7 +395,7 @@ The player must support Windows media controls (most do: Spotify, Chrome, Edge, 
 <details>
 <summary><b>Discord / OBS doesn't hear the processed mic</b></summary>
 
-In the app, choose the **output** side of your second cable (for example **CABLE Out 16ch**) as the microphone, not your real mic. In SonicBoost the Mic view must say **Live**. If no second cable is listed, install VB-Audio Hi-Fi Cable or CABLE-A/B and restart.
+In the app, choose the **output** side of your second cable (for example **Hi-Fi Cable Output**) as the microphone, not your real mic. In SonicBoost the Mic view must say **Live**. If no second cable is listed, install VB-Audio Hi-Fi Cable or CABLE-A/B and restart.
 </details>
 
 <details>
