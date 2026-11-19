@@ -13,7 +13,7 @@ use crate::micdsp::{MicChain, MicParams};
 use crate::ring::Ring;
 use anyhow::{anyhow, bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SizedSample, StreamConfig};
+use cpal::{FromSample, SizedSample, StreamConfig};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -349,6 +349,7 @@ fn build(
         monitor: mon_name,
         latency_ms: (FRAME as u32 * 1000 / 48_000) + TARGET_MS as u32 + 5,
         error: None,
+        listening: Vec::new(),
     };
     Ok((streams, st))
 }

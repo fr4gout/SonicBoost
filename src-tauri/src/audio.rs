@@ -9,7 +9,7 @@ use crate::dsp::{DspParams, FilterKind, PeqBand, Processor, Resampler, EQ_BANDS,
 use crate::ring::Ring;
 use anyhow::{anyhow, bail, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample, SizedSample, StreamConfig};
+use cpal::{FromSample, SizedSample, StreamConfig};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
