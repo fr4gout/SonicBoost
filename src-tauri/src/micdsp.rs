@@ -4,7 +4,7 @@
 //!   mic → boost → [noise suppression: in mic.rs] → gate → voice EQ →
 //!   compressor → de-esser → voice mode → soundboard mix → limiter → out
 
-use crate::dsp::{Ambience, FilterKind, Limiter, ParametricEq, PeqBand, PitchShifter};
+use crate::dsp::{Ambience, FilterKind, Limiter, ParametricEq, PeqBand};
 use std::f32::consts::PI;
 use std::sync::Arc;
 
@@ -395,6 +395,106 @@ impl Soundboard {
     }
 }
 
+// ------------------------------------------------------- voice pitch ---
+
+/// Pitch shifter tuned for speech.
+///
+/// Like the speaker path's shifter it reads the signal through two delay
+/// taps that sweep in opposite phase and crossfade, but every time a tap
+/// restarts (at zero gain, so silently) it picks the start delay whose
+/// waveform best lines up with the other tap: a short cross-correlation
+/// search over about one voice period. Both taps are then in phase while
+/// they crossfade, so there is no comb-filter "phasing" or warble, even on
+/// big shifts like Monster (-8 st) or Chipmunk (+9 st).
+pub struct VoicePitch {
+    buf: Vec<f32>,
+    mask: usize,
+    w: usize,
+    win: f32,    // delay sweep per tap cycle
+    search: i32, // ± search range (samples)
+    corr: usize, // correlation length (samples)
+    d: [f32; 2],
+    pos: [f32; 2],
+}
+
+impl VoicePitch {
+    pub fn new(fs: f32) -> Self {
+        let win = (fs * 0.040).round();
+        let search = (fs * 0.0055) as i32; // ±5.5 ms covers voices down to ~90 Hz
+        let corr = (fs * 0.008) as usize;
+        let size = (win as usize + 2 * search as usize + corr + 64).next_power_of_two();
+        Self { buf: vec![0.0; size], mask: size - 1, w: 0, win, search, corr, d: [search as f32 + 1.0, win * 0.5], pos: [0.0, 0.5] }
+    }
+
+    #[inline]
+    fn at(&self, delay: usize) -> f32 {
+        self.buf[(self.w.wrapping_sub(delay)) & self.mask]
+    }
+
+    #[inline]
+    fn read(&self, delay: f32) -> f32 {
+        let i = delay.floor();
+        let f = delay - i;
+        let a = self.at(i as usize);
+        let b = self.at(i as usize + 1);
+        a + (b - a) * f
+    }
+
+    /// Restarts tap `i` at the delay that best matches the other tap.
+    fn restart(&mut self, i: usize, rate: f32) {
+        let other = self.d[1 - i].max(1.0).round() as usize;
+        let s = self.search;
+        let nominal = if rate > 0.0 { s + 1 } else { self.win as i32 + s + 1 };
+        let mut best = nominal;
+        let mut best_score = f32::MIN;
+        let mut k = -s;
+        while k <= s {
+            let cand = (nominal + k).max(1) as usize;
+            let (mut c, mut e) = (0.0f32, 1e-9f32);
+            let mut j = 0;
+            while j < self.corr {
+                let a = self.at(cand + j);
+                c += a * self.at(other + j);
+                e += a * a;
+                j += 2;
+            }
+            let score = c / e.sqrt();
+            if score > best_score {
+                best_score = score;
+                best = cand as i32;
+            }
+            k += 2;
+        }
+        self.d[i] = best as f32;
+    }
+
+    /// `ratio` = 2^(semitones/12). 1.0 passes straight through.
+    #[inline]
+    pub fn process(&mut self, x: f32, ratio: f32) -> f32 {
+        self.buf[self.w] = x;
+        let out = if (ratio - 1.0).abs() < 1e-4 {
+            x
+        } else {
+            let rate = 1.0 - ratio; // delay change per sample (>0 = lower pitch)
+            let step = rate.abs() / self.win;
+            let mut y = 0.0;
+            for i in 0..2 {
+                self.pos[i] += step;
+                if self.pos[i] >= 1.0 {
+                    self.pos[i] -= 1.0;
+                    self.restart(i, rate);
+                }
+                self.d[i] = (self.d[i] + rate).clamp(1.0, (self.mask - 2) as f32);
+                let g = (PI * self.pos[i]).sin();
+                y += self.read(self.d[i]) * g * g;
+            }
+            y
+        };
+        self.w = (self.w + 1) & self.mask;
+        out
+    }
+}
+
 // ---------------------------------------------------------------- chain --
 
 pub struct MicChain {
@@ -408,7 +508,7 @@ pub struct MicChain {
     pub deess: DeEsser,
     mode: VoiceMode,
     meq: ParametricEq,
-    pitch: PitchShifter,
+    pitch: VoicePitch,
     t: f32,
     comb: Delay,
     flange: Delay,
@@ -433,7 +533,7 @@ impl MicChain {
             deess: DeEsser::new(),
             mode: VoiceMode::Natural,
             meq: ParametricEq::new(MIC_FS),
-            pitch: PitchShifter::new(MIC_FS),
+            pitch: VoicePitch::new(MIC_FS),
             t: 0.0,
             comb: Delay::new(1024),
             flange: Delay::new(1024),
@@ -648,6 +748,50 @@ pub fn decode_wav(bytes: &[u8]) -> Result<Vec<f32>, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn voice_pitch_is_accurate_and_smooth() {
+        use std::f32::consts::PI;
+        let fs = 48_000.0;
+        let mut ph = 0.0f32;
+        let x: Vec<f32> = (0..96_000)
+            .map(|_| {
+                ph += 2.0 * PI * 110.0 / fs;
+                (1..20).map(|h| (ph * h as f32).sin() / h as f32).sum::<f32>() * 0.1
+            })
+            .collect();
+        for st in [-8.0f32, 9.0] {
+            let r = 2f32.powf(st / 12.0);
+            let mut p = VoicePitch::new(fs);
+            let y: Vec<f32> = x.iter().map(|&v| p.process(v, r)).collect();
+            // pitch: autocorrelation peak
+            let seg = &y[48_000..52_800];
+            let ac: Vec<f32> = (0..900)
+                .map(|l| {
+                    if l < 60 {
+                        return 0.0;
+                    }
+                    let (mut c, mut e1, mut e2) = (0.0f32, 0.0f32, 0.0f32);
+                    for i in 0..seg.len() - l {
+                        c += seg[i] * seg[i + l];
+                        e1 += seg[i] * seg[i];
+                        e2 += seg[i + l] * seg[i + l];
+                    }
+                    c / (e1 * e2).sqrt().max(1e-9)
+                })
+                .collect();
+            let best = ac.iter().cloned().fold(0.0f32, f32::max);
+            // first peak close to the best one = the fundamental (not a multiple)
+            let lag = (61..899).find(|&l| ac[l] > 0.9 * best && ac[l] >= ac[l - 1] && ac[l] >= ac[l + 1]).unwrap();
+            let f0 = fs / lag as f32;
+            assert!((f0 / (110.0 * r) - 1.0).abs() < 0.04, "{st} st: got {f0} Hz");
+            // smoothness: 20 ms level barely moves (no crossfade warble)
+            let lv: Vec<f32> = y[24_000..].chunks(960).map(|c| (c.iter().map(|v| v * v).sum::<f32>() / 960.0).sqrt()).collect();
+            let m = lv.iter().sum::<f32>() / lv.len() as f32;
+            let sd = (lv.iter().map(|v| (v - m) * (v - m)).sum::<f32>() / lv.len() as f32).sqrt();
+            assert!(sd / m < 0.12, "{st} st: level wobble {}", sd / m);
+        }
+    }
+
     use super::*;
 
     fn tone(f: f32, n: usize, amp: f32) -> Vec<f32> {

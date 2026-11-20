@@ -106,6 +106,18 @@ pub struct MicStatus {
     /// Recording devices that Windows itself plays to the speakers
     /// ("Listen to this device"): the usual cause of hearing yourself.
     pub listening: Vec<String>,
+    /// Set when the two ends of the mic's cable run at different sample
+    /// rates. Cables like Hi-Fi Cable don't convert, so apps then hear the
+    /// voice slowed down (deeper) and increasingly late.
+    pub rate_mismatch: Option<RateMismatch>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct RateMismatch {
+    pub playback: String,
+    pub playback_hz: u32,
+    pub recording: String,
+    pub recording_hz: u32,
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -313,6 +325,21 @@ fn build(
     let in_cfg: StreamConfig = in_sup.config();
     let out_sup = out_dev.default_output_config().context("reading cable format")?;
     let out_cfg: StreamConfig = out_sup.config();
+    // the other end of the cable, which Discord / OBS record from
+    let rate_mismatch = host
+        .input_devices()
+        .ok()
+        .and_then(|mut it| it.find(|d| d.name().map(|n| same_cable(&n, &out_name)).unwrap_or(false)))
+        .and_then(|d| {
+            let rec_hz = d.default_input_config().ok()?.sample_rate().0;
+            let play_hz = out_cfg.sample_rate.0;
+            (rec_hz != play_hz).then(|| RateMismatch {
+                playback: out_name.clone(),
+                playback_hz: play_hz,
+                recording: d.name().unwrap_or_default(),
+                recording_hz: rec_hz,
+            })
+        });
 
     let cable = Ring::new(out_cfg.sample_rate.0 as usize);
     let mut streams = Vec::new();
@@ -361,6 +388,7 @@ fn build(
         latency_ms: (FRAME as u32 * 1000 / 48_000) + TARGET_MS as u32 + 5,
         error: None,
         listening: Vec::new(),
+        rate_mismatch,
     };
     Ok((streams, st))
 }

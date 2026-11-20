@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-11-20
+
+### Fixed
+- **Cleaner voice modes.** Deep, High, Chipmunk, Monster, Alien and Custom use a new pitch shifter built for speech: each time it splices, it lines the waveform up with what's already playing, so there's no warbly, phasey sound, even on big shifts like Monster (−8 semitones). Level wobble on shifted voices drops 2–7×, and a test checks pitch accuracy and smoothness.
+- **Voice sounds deeper and late in Discord / OBS.** Hi-Fi Cable doesn't convert sample rates, so when its two ends are set to different rates (for example 48000 Hz and 44100 Hz) apps hear your voice slowed down and falling behind. The Mic view now detects this, names both ends with their rates and opens Sound settings so you can set them to the same rate.
+
 ## [1.0.8] - 2026-11-20
 
 ### Fixed
@@ -113,7 +119,8 @@ First public release.
 - The analyzer pauses while the window is hidden.
 - NSIS (`-setup.exe`) and MSI installers.
 
-[Unreleased]: https://github.com/fr4gout/SonicBoost/compare/v1.0.8...HEAD
+[Unreleased]: https://github.com/fr4gout/SonicBoost/compare/v1.0.9...HEAD
+[1.0.9]: https://github.com/fr4gout/SonicBoost/compare/v1.0.8...v1.0.9
 [1.0.8]: https://github.com/fr4gout/SonicBoost/compare/v1.0.7...v1.0.8
 [1.0.7]: https://github.com/fr4gout/SonicBoost/compare/v1.0.6...v1.0.7
 [1.0.6]: https://github.com/fr4gout/SonicBoost/compare/v1.0.5...v1.0.6

@@ -219,12 +219,22 @@ export class MicView {
     $('micStateTitle').textContent = title;
     $('micStateText').textContent = text;
     $('micStateText').title = text;
-    const heard = on && s.running ? (s.listening || []) : [];
+    const live = on && s.running;
+    const heard = live ? (s.listening || []) : [];
+    const rate = live ? s.rate_mismatch : null;
     const box = $('micListen');
-    box.hidden = !heard.length;
+    const short = (n) => esc(String(n).replace(/\s*\(.*\)\s*$/, ''));
+    let html = '';
+    if (rate) {
+      html += `<span><b>Your voice will sound deeper and late:</b> <b>${short(rate.playback)}</b> runs at ${rate.playback_hz} Hz but <b>${short(rate.recording)}</b> runs at ${rate.recording_hz} Hz. This cable doesn't convert between them. In Sound settings open each one → <b>Properties</b> → <b>Advanced</b> and pick the same rate (48000 Hz), then turn the mic off and on.</span><button class="chip small" data-open="sound-panel">Open Sound settings</button>`;
+    }
     if (heard.length) {
-      box.innerHTML = `<span><b>This is why you hear yourself:</b> Windows is playing <b>${heard.map(esc).join('</b> and <b>')}</b> to your speakers (“Listen to this device”). Open it, go to the <b>Listen</b> tab and untick the box.</span><button class="chip small" id="micListenFix">Open Recording devices</button>`;
-      $('micListenFix').onclick = () => invoke('open_link', { target: 'recording' }).catch((e) => this.toast(String(e)));
+      html += `<span><b>This is why you hear yourself:</b> Windows is playing <b>${heard.map(esc).join('</b> and <b>')}</b> to your speakers (“Listen to this device”). Open it, go to the <b>Listen</b> tab and untick the box.</span><button class="chip small" data-open="recording">Open Recording devices</button>`;
+    }
+    box.hidden = !html;
+    if (html) {
+      box.innerHTML = html;
+      box.querySelectorAll('[data-open]').forEach((b) => { b.onclick = () => invoke('open_link', { target: b.dataset.open }).catch((e) => this.toast(String(e))); });
     }
     $('micInfo').textContent = on && s.running ? `48 kHz mono · ${s.latency_ms || 35} ms · monitor ${s.monitor ? 'on' : 'off'}` : '';
   }
