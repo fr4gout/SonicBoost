@@ -152,21 +152,35 @@ pub fn listen_enabled() -> Vec<String> {
         }
         out
     };
-    let listen = query(LISTEN);
-    if listen.is_empty() {
-        return Vec::new();
-    }
-    let desc = query(DESC);
-    let iface = query(IFACE);
-    listen
+    // one pass over all recording devices for the Listen flag only
+    let on: Vec<String> = query(LISTEN)
         .into_iter()
         // REG_BINARY PROPVARIANT: VT_BOOL (0B00) with boolVal at byte 8; TRUE = FFFF
         .filter(|(_, hex)| hex.len() >= 20 && hex[..4].eq_ignore_ascii_case("0B00") && hex[16..20].eq_ignore_ascii_case("FFFF"))
-        .filter_map(|(k, _)| {
-            let d = desc.get(&k)?;
-            Some(match iface.get(&k) {
+        .map(|(k, _)| k)
+        .collect();
+    // names only for the few devices that have it switched on
+    let read = |key: &str, value: &str| -> Option<String> {
+        let props = format!("{key}\\Properties");
+        let o = std::process::Command::new("reg")
+            .args(["query", props.as_str(), "/v", value])
+            .creation_flags(0x0800_0000)
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&o.stdout).into_owned();
+        text.lines().find_map(|l| {
+            let rest = l.trim().strip_prefix(value)?;
+            let mut parts = rest.split_whitespace();
+            let _kind = parts.next();
+            Some(parts.collect::<Vec<_>>().join(" "))
+        })
+    };
+    on.iter()
+        .filter_map(|k| {
+            let d = read(k, DESC)?;
+            Some(match read(k, IFACE) {
                 Some(i) if !i.is_empty() => format!("{d} ({i})"),
-                _ => d.clone(),
+                _ => d,
             })
         })
         .collect()

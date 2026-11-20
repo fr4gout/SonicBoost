@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-11-20
+
+### Fixed
+- **"Not Responding" after starting.** SonicBoost opened the speaker and mic devices on the window's thread at startup, and could also check Windows' *Listen* setting there, so the window froze for several seconds (longer with the mic on). Devices now open in the background and the window answers at once.
+- **Empty Mic view.** Opening the Mic view could lock up the settings, so the presets, voice modes and device lists never loaded.
+
 ## [1.0.7] - 2026-11-20
 
 ## [1.0.6] - 2026-11-20
@@ -107,7 +113,8 @@ First public release.
 - The analyzer pauses while the window is hidden.
 - NSIS (`-setup.exe`) and MSI installers.
 
-[Unreleased]: https://github.com/fr4gout/SonicBoost/compare/v1.0.7...HEAD
+[Unreleased]: https://github.com/fr4gout/SonicBoost/compare/v1.0.8...HEAD
+[1.0.8]: https://github.com/fr4gout/SonicBoost/compare/v1.0.7...v1.0.8
 [1.0.7]: https://github.com/fr4gout/SonicBoost/compare/v1.0.6...v1.0.7
 [1.0.6]: https://github.com/fr4gout/SonicBoost/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/fr4gout/SonicBoost/compare/v1.0.4...v1.0.5

@@ -771,6 +771,7 @@ async function boot() {
   listen('audio-frame', (f) => audio.feed(f));
   await listen('media-status', (m) => np.update(m));
   invoke('media_control', { action: 'refresh' }).catch(() => {});
+  listen('engine-ready', (s) => setStatus(s)); // devices opened in the background at startup
   listen('engine-status', (s) => { setStatus(s); toast(s.running ? 'Audio device changed — reconnected' : 'Audio device lost'); });
   listen('bypass-changed', (on) => setBypass(on, false));
   listen('windows-volume', (v) => { winVol = v; showWinVol(); });

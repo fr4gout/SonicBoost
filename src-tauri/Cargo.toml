@@ -1,6 +1,6 @@
 [package]
 name = "sonicboost"
-version = "1.0.7"
+version = "1.0.8"
 description = "SonicBoost - system sound booster, equalizer, pitch shifter and visualizer for Windows"
 authors = ["MD. Naimur Rahman Nabil"]
 edition = "2021"

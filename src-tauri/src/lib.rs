@@ -135,7 +135,7 @@ impl AppState {
 
     fn restart_mic(&self) -> mic::MicStatus {
         let m = self.settings.lock().unwrap().mic.clone();
-        let mut st = if m.enabled {
+        let st = if m.enabled {
             let monitor = if m.monitor_on { Some(m.monitor_device.clone().unwrap_or_else(|| "default".into())) } else { None };
             self.apply_mic();
             let forbid = self.forbidden_mic_output();
@@ -154,12 +154,28 @@ impl AppState {
             self.restart();
         }
         if st.running {
-            // Windows' own "Listen to this device" on your mic or the cable
+            // Windows' own "Listen to this device" on your mic or the cable.
+            // Reading it takes a moment, so it runs in the background and
+            // updates the status when done.
             let mic_in = st.input.clone().unwrap_or_default();
-            st.listening = mic::listen_enabled()
-                .into_iter()
-                .filter(|n| *n == mic_in || audio::is_cable(n))
-                .collect();
+            std::thread::spawn(move || {
+                let heard: Vec<String> = mic::listen_enabled()
+                    .into_iter()
+                    .filter(|n| *n == mic_in || audio::is_cable(n))
+                    .collect();
+                if heard.is_empty() {
+                    return;
+                }
+                if let Some(app) = APP.get() {
+                    let state = app.state::<AppState>();
+                    let snapshot = {
+                        let mut ms = state.mic_status.lock().unwrap();
+                        ms.listening = heard;
+                        ms.clone()
+                    };
+                    let _ = app.emit("mic-status", &snapshot);
+                }
+            });
         }
         *self.mic_status.lock().unwrap() = st.clone();
         st
@@ -179,6 +195,9 @@ impl AppState {
         st
     }
 }
+
+/// Set once at startup, for background threads that need to emit events.
+static APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
 
 #[derive(Serialize)]
 struct FullState {
@@ -1003,9 +1022,18 @@ pub fn run() {
                 path,
             };
             state.apply(&cfg);
-            state.restart();
-            state.restart_mic();
             app.manage(state);
+            let _ = APP.set(app.handle().clone());
+            // Opening audio devices can take seconds: never on the UI thread,
+            // or Windows shows "Not Responding" while the app starts.
+            let h = app.handle().clone();
+            std::thread::spawn(move || {
+                let st = h.state::<AppState>();
+                let es = st.restart();
+                let _ = h.emit("engine-ready", &es);
+                let ms = st.restart_mic();
+                let _ = h.emit("mic-status", &ms);
+            });
             spawn_watchdog(app.handle().clone());
             if let Err(e) = register_hotkeys(app) {
                 eprintln!("hotkeys unavailable: {e}");
